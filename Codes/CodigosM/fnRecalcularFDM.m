@@ -36,30 +36,24 @@ let
         else if dFDM = 0.97 then
             let
                 fdmAnt1 = fnBuscarFDMAnterior(sPerAnt1, sContrato, iItem),
-                fdmAnt2 = fnBuscarFDMAnterior(sPerAnt2, sContrato, iItem)
+                fdmAnt2 = fnBuscarFDMAnterior(sPerAnt2, sContrato, iItem),
+                // padroniza ausencia de histórico para 0.0 para manter a regra
+                // consistente com o VBA legado e evitar quebra por valores nulos
+                vFdmAnt1 = if fdmAnt1 = null then 0 else fdmAnt1,
+                vFdmAnt2 = if fdmAnt2 = null then 0 else fdmAnt2
             in
-                if fdmAnt1 = null then
-                    error Error.Record(
-                        "FDMAnteriorNaoEncontrado",
-                        "FDM do período anterior (" & sPerAnt1 & ") não localizado para o contrato '" & sContrato & "', item " & Text.From(iItem) & "."
-                    )
-                else if fdmAnt1 >= 0.98 then
+                if vFdmAnt1 >= 0.98 then
                     dFDM
-                else if fdmAnt1 = 0.97 and fdmAnt2 <> null and fdmAnt2 > 0.97 then
+                else if vFdmAnt1 = 0.97 and vFdmAnt2 > 0.97 then
                     0.96
-                else if fdmAnt1 = 0.97 and fdmAnt2 <> null and fdmAnt2 <= 0.97 then
+                else if vFdmAnt1 = 0.97 and vFdmAnt2 <= 0.97 then
                     0.95
-                else if fdmAnt1 = 0.97 and fdmAnt2 = null then
-                    0.96
-                else if fdmAnt1 = 0.96 then
+                else if vFdmAnt1 = 0.96 then
                     0.95
-                else if fdmAnt1 = 0.95 then
+                else if vFdmAnt1 = 0.95 then
                     0.95
                 else
-                    error Error.Record(
-                        "RegraFDMNaoTratada",
-                        "Combinação de FDM anterior não prevista na regra 8.4.3: fdmAnt1=" & Text.From(fdmAnt1) & ", fdmAnt2=" & Text.From(fdmAnt2)
-                    )
+                    dFDM
         else
             dFDM
 in

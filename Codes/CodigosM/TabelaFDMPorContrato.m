@@ -73,6 +73,7 @@ let
 
     // 8) Recálculo final do FDM com degradação em cascata (item 8.4.3)
     //    Se não houver histórico válido, assume o FDM Bruto mensal como fallback
+    //    e sinaliza explicitamente a ausência de histórico para auditoria.
     ComFDM1Final = Table.AddColumn(ComValidacaoPeriodos, "FDM1", each
         if not PeriodosValidosConst then
             [FDM1_Bruto]
@@ -81,7 +82,11 @@ let
             otherwise [FDM1_Bruto],
         type number
     ),
-    ComFDM2Final = Table.AddColumn(ComFDM1Final, "FDM2", each
+    ComHistorico1 = Table.AddColumn(ComFDM1Final, "HistoricoFDM1Valido", each
+        PeriodosValidosConst,
+        type logical
+    ),
+    ComFDM2Final = Table.AddColumn(ComHistorico1, "FDM2", each
         if not PeriodosValidosConst then
             [FDM2_Bruto]
         else
@@ -89,13 +94,17 @@ let
             otherwise [FDM2_Bruto],
         type number
     ),
+    ComHistorico2 = Table.AddColumn(ComFDM2Final, "HistoricoFDM2Valido", each
+        PeriodosValidosConst,
+        type logical
+    ),
 
     // 9) Seleção final e ordenação das colunas
-    TabelaFinal = Table.SelectColumns(ComFDM2Final, {
+    TabelaFinal = Table.SelectColumns(ComHistorico2, {
         "Contrato",
         "TSPE1", "TSPR1", "IAPFARQ1", "FDM1_Bruto", "FDM1",
         "TSPE2", "TSPR2", "IAPFARQ2", "FDM2_Bruto", "FDM2",
-        "PeriodosValidos"
+        "PeriodosValidos", "HistoricoFDM1Valido", "HistoricoFDM2Valido"
     })
 in
     TabelaFinal

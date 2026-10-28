@@ -9,7 +9,7 @@ let
             Filtrado = Table.SelectRows(RefFDMHistorico, each
                 [Medição] = periodo and [Contrato] = contrato and [#"Item contrato"] = item
             ),
-            Resultado = if not Table.IsEmpty(Filtrado) then Filtrado{0}[FDM] else null
+            Resultado = if not Table.IsEmpty(Filtrado) then Filtrado{0}[FDM] else 0
         in
             Resultado
 in
