@@ -3,7 +3,7 @@ $xl.Visible = $false
 $xl.DisplayAlerts = $false
 
 try {
-    $wb = $xl.Workbooks.Open('D:\PainelNovo-main\Painel de controle MemoriaPetrobras V82.xlsm')
+    $wb = $xl.Workbooks.Open('D:\PainelNovo-main\Painel de controle MemoriaPetrobras V84.xlsm')
     foreach ($ws in $wb.Worksheets) {
         if ($ws.Shapes.Count -gt 0) {
             Write-Host "Sheet: $($ws.Name) has $($ws.Shapes.Count) shapes"

@@ -334,8 +334,8 @@ ExpandirDataHoraSeparadas = Table.ExpandRecordColumn(
 // interrompa o processamento de toda a tabela - o erro e registrado
 // na propria coluna de LOG.
 AdicionarClassificacaoFDM = Table.AddColumn(ExpandirDataHoraSeparadas, "ResultadoFDM", each
-    try
-        fnClassificarFDM(
+    let
+        res = try fnClassificarFDM(
             [CalculoFDM], [#"Ref. FDM"], [#"Ref. prazo"],
             [#"Descrição da atividade"], [Contrato],
             [Data Abertura], [Hora Abertura],
@@ -343,8 +343,11 @@ AdicionarClassificacaoFDM = Table.AddColumn(ExpandirDataHoraSeparadas, "Resultad
             [Município], [UF], [Grupo.1],
             [#"tabelaPrazoContrato.Prazo"], [Aplicação], RefCalendario
         )
-    otherwise
-        [ Classificacao = null, StatusPrazo = null, Log = "Erro no calculo - verificar dados da linha; " ],
+    in
+        if res[HasError] then
+            [ Classificacao = null, StatusPrazo = null, Log = "Erro no calculo: " & (res[Error][Message] ?? "falha no processamento M") & "; " ]
+        else
+            res[Value],
     type record
 ),
 ExpandirClassificacaoFDM = Table.ExpandRecordColumn(
