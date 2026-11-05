@@ -11,13 +11,17 @@ let
                     ehDiaUtil = dow <= 4,
                     ehFeriado = if tbFeriados = null then false else
                         let
-                            munStr = if municipio = null then "" else Text.Upper(municipio),
-                            ufStr = if uf = null then "" else Text.Upper(uf),
-                            feriadosData = Table.SelectRows(tbFeriados, each [Data] = data),
+                            munStr = if municipio = null then "" else Text.Upper(Text.Trim(municipio)),
+                            ufStr = if uf = null then "" else Text.Upper(Text.Trim(uf)),
+                            // Assegura comparacao de Data limpa (apenas ano-mes-dia)
+                            feriadosData = Table.SelectRows(tbFeriados, each Date.From([Data]) = data),
+                            temColUF = Table.HasColumns(feriadosData, {"UF"}),
+                            temColMun = Table.HasColumns(feriadosData, {"Município"}) or Table.HasColumns(feriadosData, {"Municipio"}),
+                            colMunNome = if Table.HasColumns(feriadosData, {"Município"}) then "Município" else "Municipio",
                             matchFeriado = Table.RowCount(
                                 Table.SelectRows(feriadosData, each
-                                    ([UF] = "Todos" or [UF] = null or Text.Upper([UF]) = ufStr) and
-                                    ([Município] = "Todos" or [Município] = null or Text.Upper([Município]) = munStr)
+                                    (not temColUF or [UF] = null or [UF] = "Todos" or Text.Upper(Text.Trim([UF])) = ufStr) and
+                                    (not temColMun or Record.FieldOrDefault(_, colMunNome, "Todos") = null or Record.FieldOrDefault(_, colMunNome, "Todos") = "Todos" or Text.Upper(Text.Trim(Record.FieldOrDefault(_, colMunNome, ""))) = munStr)
                                 )
                             ) > 0
                         in
@@ -65,7 +69,6 @@ let
             UltimoPendente = if List.Count(Historico) = 0 then EstadoInicial else List.Last(Historico),
             EstadoFinal = if tempoResposta <= #duration(0,0,0,0) then EstadoInicial else ProcessarDia(UltimoPendente)
         in
-            // ? CORRECAO: time - time = duration (conversao valida)
             DateTime.From(EstadoFinal[Data]) + (EstadoFinal[Hora] - #time(0,0,0))
 in
     fnCalcularDataSLA

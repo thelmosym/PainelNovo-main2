@@ -5,12 +5,17 @@ Attribute VB_Name = "modAnaliseMonitoramento"
 '           para a planilha de Monitoramento Individual (A4UU, DPBR, GPZ1, GQ6S, S2IJ).
 '
 ' REGRAS PRINCIPAIS ATENDIDAS:
-'   1. REGRA INICIAL DE FILTRAGEM:
-'      Apenas linhas onde a coluna 'Situação' (Coluna C) estiver preenchida com "CO" (Concluído) ou "AT" (Atendido)
-'      são analisadas para procura de erros. Linhas com outras situações ou em branco são desconsideradas.
+'   1. REGRA DE FILTRAGEM E AUDITORIA DA SITUAÇÃO DA OS:
+'      São auditadas linhas com Situação "CO" (Concluído) ou "AT" (Atendido), BEM COMO linhas onde o campo
+'      "OS disponibilizada" estiver "Sim" e/ou houver data de fechamento preenchida, mas a Situação estiver
+'      diferente de CO ou AT (ou vazia), gerando o log de inconformidade correspondente na Coluna C.
+'      Linhas com outras situações sem fechamento nem disponibilização continuam desconsideradas.
 '   2. GRAVAÇÃO DO LOG NA COLUNA Z:
 '      O log de inconsistências é gravado na mesma linha onde foi encontrado o erro,
 '      exatamente na coluna Z ("LOG") da aba "Monitoramento".
+'   3. CONSISTÊNCIA CONTRATO x LOCALIDADE (TABELAB):
+'      Valida se o contrato informado na Coluna D condiz com a localidade da Coluna V,
+'      resolvendo a cadeia Localidade -> Centro -> UF -> Contrato homologado na TabelaB.
 '
 ' PADRÕES DE ENGENHARIA E ALTA PERFORMANCE:
 '   - Processamento 100% em memória (RAM) através de matrizes (Variant Arrays), processando
@@ -37,6 +42,18 @@ Private Const COR_FUNDO_OK   As Long = 15138766    ' RGB(238, 242, 238) - Neutro
 ' Pode ser vinculado diretamente a botões existentes da planilha Monitoramento ou Menu
 '-------------------------------------------------------------------------------------------------------------------
 Public Sub AnalisarErrosMonitoramentoEGerarLog()
+    ExecutarAnaliseMonitoramento False
+End Sub
+
+Public Sub AnalisarErrosMonitoramento_Silencioso()
+    ExecutarAnaliseMonitoramento True
+End Sub
+
+Public Sub analiseMonitoramento()
+    ExecutarAnaliseMonitoramento False
+End Sub
+
+Private Sub ExecutarAnaliseMonitoramento(ByVal bSilencioso As Boolean)
     Dim wsMonit As Worksheet
     Dim wsRef   As Worksheet
     Dim wsMenu  As Worksheet
@@ -62,6 +79,8 @@ Public Sub AnalisarErrosMonitoramentoEGerarLog()
     Dim dictSiglasObs   As Object
     Dim dictLocalidades As Object ' Armazena flag "S" ou "N"
     Dim dictPrazoAtiv   As Object ' "Fiscalização" ou "Tabela"
+    Dim dictLocContrato As Object ' Localidade -> Contratos permitidos (ex: "|IRON-LT1|4600686987|")
+    Dim dictLocInfo     As Object ' Localidade -> "UF|Centro|ContratoPrincipal"
     
     Dim sLogLinha As String
     Dim bLinhaAuditada As Boolean
@@ -111,13 +130,17 @@ Public Sub AnalisarErrosMonitoramentoEGerarLog()
     
     iTotalLinhas = ul - LINHA_INICIAL_DADOS + 1
     
-    If MsgBox("Será executada a análise de conformidade nos registros da aba Monitoramento." & vbNewLine & vbNewLine & _
-              "• Regra Inicial: Somente linhas com Situação 'CO' (Concluído) ou 'AT' (Atendido) serão auditadas." & vbNewLine & _
-              "• Destino: Os erros encontrados serão gravados na Coluna Z (LOG) da respectiva linha." & vbNewLine & vbNewLine & _
-              "Total de registros a varrer: " & Format(iTotalLinhas, "#,##0") & vbNewLine & vbNewLine & _
-              "Deseja iniciar a auditoria?", _
-              vbYesNo + vbQuestion, MSG_TITULO) = vbNo Then
-        Exit Sub
+    If Not bSilencioso Then
+        If MsgBox("Será executada a análise de conformidade nos registros da aba Monitoramento." & vbNewLine & vbNewLine & _
+                  "  Regras de Auditoria:" & vbNewLine & _
+                  "   - Linhas com Situação 'CO' (Concluído) ou 'AT' (Atendido);" & vbNewLine & _
+                  "   - Linhas com 'OS disponibilizada = Sim' e/ou data de fechamento preenchida." & vbNewLine & vbNewLine & _
+                  "  Destino: Os erros encontrados serão gravados na Coluna Z (LOG) da respectiva linha." & vbNewLine & vbNewLine & _
+                  "Total de registros a varrer: " & Format(iTotalLinhas, "#,##0") & vbNewLine & vbNewLine & _
+                  "Deseja iniciar a auditoria?", _
+                  vbYesNo + vbQuestion, MSG_TITULO) = vbNo Then
+            Exit Sub
+        End If
     End If
     
     tInicio = Timer
@@ -145,6 +168,8 @@ Public Sub AnalisarErrosMonitoramentoEGerarLog()
     Set dictSiglasObs = CreateObject("Scripting.Dictionary")
     Set dictLocalidades = CreateObject("Scripting.Dictionary")
     Set dictPrazoAtiv = CreateObject("Scripting.Dictionary")
+    Set dictLocContrato = CreateObject("Scripting.Dictionary")
+    Set dictLocInfo = CreateObject("Scripting.Dictionary")
     
     dictSituacoes.CompareMode = vbTextCompare
     dictContratos.CompareMode = vbTextCompare
@@ -157,10 +182,13 @@ Public Sub AnalisarErrosMonitoramentoEGerarLog()
     dictSiglasObs.CompareMode = vbTextCompare
     dictLocalidades.CompareMode = vbTextCompare
     dictPrazoAtiv.CompareMode = vbTextCompare
+    dictLocContrato.CompareMode = vbTextCompare
+    dictLocInfo.CompareMode = vbTextCompare
     
     CarregarDicionariosReferencia wsRef, dictSituacoes, dictContratos, dictUFs, dictContratoUF, _
                                   dictAtividades, dictItens, dictAtivItem, dictAplicacoes, _
-                                  dictSiglasObs, dictLocalidades, dictPrazoAtiv
+                                  dictSiglasObs, dictLocalidades, dictPrazoAtiv, _
+                                  dictLocContrato, dictLocInfo
     
     '=== 4. LEITURA EM BLOCO DOS DADOS DA PLANILHA MONITORAMENTO ===
     ' Lê as colunas de A (1) até Z (26) em uma única matriz na RAM
@@ -183,7 +211,8 @@ Public Sub AnalisarErrosMonitoramentoEGerarLog()
         AuditarLinhaMonitoramento vDados, r, sLogLinha, bLinhaAuditada, _
                                   dictSituacoes, dictContratos, dictUFs, dictContratoUF, _
                                   dictAtividades, dictItens, dictAtivItem, dictAplicacoes, _
-                                  dictSiglasObs, dictLocalidades, dictPrazoAtiv
+                                  dictSiglasObs, dictLocalidades, dictPrazoAtiv, _
+                                  dictLocContrato, dictLocInfo
         
         If bLinhaAuditada Then
             iLinhasAuditadas = iLinhasAuditadas + 1
@@ -228,19 +257,19 @@ SairRotina:
         On Error GoTo 0
     End If
     
-    ExibirResumoAuditoria iTotalLinhas, iLinhasAuditadas, iLinhasComErro, (tFim - tInicio)
+    If Not bSilencioso Then
+        ExibirResumoAuditoria iTotalLinhas, iLinhasAuditadas, iLinhasComErro, (tFim - tInicio)
+    End If
     Exit Sub
 
 TratarErro:
-    MsgBox "Erro durante a auditoria de dados do monitoramento:" & vbNewLine & _
+    If Not bSilencioso Then
+        MsgBox "Erro durante a auditoria de dados do monitoramento:" & vbNewLine & _
            Err.Number & " - " & Err.Description, vbCritical, MSG_TITULO
+    End If
     Resume SairRotina
 End Sub
 
-' Alias para manter compatibilidade com macros já associadas a botões
-Public Sub analiseMonitoramento()
-    AnalisarErrosMonitoramentoEGerarLog
-End Sub
 
 '-------------------------------------------------------------------------------------------------------------------
 ' ROTINA DE AUDITORIA DE UMA LINHA ESPECÍFICA (EXECUÇÃO 100% EM MEMÓRIA)
@@ -252,7 +281,8 @@ Private Sub AuditarLinhaMonitoramento(ByRef vDados As Variant, ByVal r As Long, 
                                      ByRef dictAtividades As Object, ByRef dictItens As Object, _
                                      ByRef dictAtivItem As Object, ByRef dictAplicacoes As Object, _
                                      ByRef dictSiglasObs As Object, ByRef dictLocalidades As Object, _
-                                     ByRef dictPrazoAtiv As Object)
+                                     ByRef dictPrazoAtiv As Object, _
+                                     ByRef dictLocContrato As Object, ByRef dictLocInfo As Object)
 
     ' Mapeamento de colunas em vDados(r, c):
     ' A (1)  - Atendente
@@ -283,22 +313,51 @@ Private Sub AuditarLinhaMonitoramento(ByRef vDados As Variant, ByVal r As Long, 
     ' Z (26) - LOG
 
     Dim sSituacao    As String
+    Dim sOSDisp      As String
+    Dim vDtFech      As Variant
+    Dim bTemFechVal  As Boolean
+    Dim bDispSim     As Boolean
     
-    ' Captura inicial da Situação (Coluna C)
+    ' Captura inicial da Situação (Coluna C), OS Disponibilizada (Coluna Y) e Fechamento (Coluna R)
     sSituacao = UCase(Trim(CStr(vDados(r, 3) & "")))
+    sOSDisp = UCase(Trim(CStr(vDados(r, 25) & "")))
+    vDtFech = vDados(r, 18)
+    
+    bTemFechVal = (Not IsEmpty(vDtFech) And Len(Trim(CStr(vDtFech & ""))) > 0)
+    bDispSim = (sOSDisp = "SIM")
     
     '===============================================================================================================
-    ' REGRA INICIAL MANDATÓRIA:
-    ' Apenas procurar erros se a coluna Situação estiver preenchida estritamente com "CO" ou "AT".
-    ' Registros com qualquer outra situação (ex: CA, PE, etc.) ou vazias são sumariamente ignorados.
+    ' REGRA DE AUDITORIA DE SITUAÇÃO DA OS:
+    ' 1. Linhas com Situação preenchida com "CO" (Concluído) ou "AT" (Atendido) são auditadas integralmente.
+    ' 2. Se o campo "OS disponibilizada" estiver preenchido como "SIM" e/ou houver data de fechamento preenchida,
+    '    mas a Situação estiver diferente de "CO" ou "AT" (ou vazia), a linha DEVE ser auditada e receber o log
+    '    apontando a inconsistência na Coluna C (Situação incompatível com fechamento/disponibilização).
+    ' 3. Registros com outra situação (ex: CA, PE) e que NÃO tenham OS disponibilizada como SIM nem fechamento
+    '    continuam sumariamente ignorados.
     '===============================================================================================================
-    If sSituacao <> "CO" And sSituacao <> "AT" Then
+    If sSituacao = "CO" Or sSituacao = "AT" Then
+        bAuditado = True
+    ElseIf bDispSim Or bTemFechVal Then
+        bAuditado = True
+        
+        Dim sMotivoSit As String
+        If bDispSim And bTemFechVal Then
+            sMotivoSit = "'OS disponibilizada' preenchido como 'Sim' e data de fechamento preenchida"
+        ElseIf bDispSim Then
+            sMotivoSit = "'OS disponibilizada' preenchido como 'Sim'"
+        Else
+            sMotivoSit = "data de fechamento preenchida"
+        End If
+        
+        If Len(sSituacao) = 0 Then
+            sLog = sLog & "(Coluna C): Situação da OS vazia, porém com " & sMotivoSit & " (exige situação 'CO' ou 'AT'); "
+        Else
+            sLog = sLog & "(Coluna C): Situação da OS '" & sSituacao & "' incompatível: " & sMotivoSit & " exige situação 'CO' ou 'AT'; "
+        End If
+    Else
         bAuditado = False
         Exit Sub
     End If
-    
-    ' Marca que a linha atende à regra inicial e deve ser auditada
-    bAuditado = True
 
     Dim sAtendente   As String
     Dim sPerFat      As String
@@ -314,13 +373,11 @@ Private Sub AuditarLinhaMonitoramento(ByRef vDados As Variant, ByVal r As Long, 
     Dim sCodOS       As String
     Dim sSiglaObs    As String
     Dim sLocalidade  As String
-    Dim sOSDisp      As String
     
     Dim vQtdSol      As Variant
     Dim vQtdAtend    As Variant
     Dim vDtSol       As Variant
     Dim vDtAbert     As Variant
-    Dim vDtFech      As Variant
     Dim vPrazoApp    As Variant
     Dim vPrazoComb   As Variant
     
@@ -527,8 +584,8 @@ Private Sub AuditarLinhaMonitoramento(ByRef vDados As Variant, ByVal r As Long, 
             sLog = sLog & "(Coluna T): Quantidade atendida não pode ser negativa; "
         End If
         If IsNumeric(vQtdSol) Then
-            If CDbl(vQtdAtend) > CDbl(vQtdSol) Then
-                sLog = sLog & "(Coluna T): Quantidade atendida superior à solicitada; "
+            If Round(CDbl(vQtdSol), 4) <> Round(CDbl(vQtdAtend), 4) Then
+                sLog = sLog & "(Coluna O e T): Quantidade solicitada diferente da quantidade atendida; "
             End If
         End If
     End If
@@ -554,6 +611,46 @@ Private Sub AuditarLinhaMonitoramento(ByRef vDados As Variant, ByVal r As Long, 
         End If
     End If
     
+    '--- 22b. COLUNAS D e V: CONSISTÊNCIA CONTRATO x LOCALIDADE (TABELAB) ---
+    If Len(sContrato) > 0 And Len(sLocalidade) > 0 Then
+        Dim sLocBusca As String
+        sLocBusca = UCase(Trim(Replace(sLocalidade, "  ", " ")))
+        
+        If dictLocContrato.Count > 0 Then
+            If dictLocContrato.Exists(sLocBusca) Then
+                Dim sContratosValidos As String
+                sContratosValidos = dictLocContrato(sLocBusca)
+                
+                Dim sContratoTestar As String
+                sContratoTestar = "|" & UCase(Trim(sContrato)) & "|"
+                
+                If InStr(1, sContratosValidos, sContratoTestar, vbTextCompare) = 0 Then
+                    Dim sDetalhesLoc As String
+                    Dim vPartesInfo As Variant
+                    Dim sUFEsperada As String
+                    Dim sContratoEsperado As String
+                    
+                    sDetalhesLoc = dictLocInfo(sLocBusca)
+                    vPartesInfo = Split(sDetalhesLoc, "|")
+                    If UBound(vPartesInfo) >= 2 Then
+                        sUFEsperada = vPartesInfo(0)
+                        sContratoEsperado = vPartesInfo(2)
+                    Else
+                        sUFEsperada = "-"
+                        sContratoEsperado = "homologado na TabelaB"
+                    End If
+                    
+                    sLog = sLog & "(Coluna D e V): Localidade '" & sLocalidade & "' pertence ao contrato '" & _
+                                  sContratoEsperado & "' (UF: " & sUFEsperada & "), mas o contrato informado é '" & _
+                                  sContrato & "'; "
+                End If
+            Else
+                ' Se a localidade não consta na TabelaB (mas informada)
+                sLog = sLog & "(Coluna D e V): Localidade '" & sLocalidade & "' não cadastrada na TabelaB para validação de contrato; "
+            End If
+        End If
+    End If
+    
     '--- 23. COLUNA Y: OS DISPONIBILIZADA? ---
     If Len(sOSDisp) = 0 Then
         sLog = sLog & "(Coluna Y): Campo vazio. Preenchimento obrigatório; "
@@ -572,7 +669,8 @@ Private Sub CarregarDicionariosReferencia(ByVal wsRef As Worksheet, _
                                          ByRef dictAtividades As Object, ByRef dictItens As Object, _
                                          ByRef dictAtivItem As Object, ByRef dictAplicacoes As Object, _
                                          ByRef dictSiglasObs As Object, ByRef dictLocalidades As Object, _
-                                         ByRef dictPrazoAtiv As Object)
+                                         ByRef dictPrazoAtiv As Object, _
+                                         ByRef dictLocContrato As Object, ByRef dictLocInfo As Object)
 
     Dim ulRef As Long
     Dim r As Long
@@ -659,6 +757,176 @@ Private Sub CarregarDicionariosReferencia(ByVal wsRef As Worksheet, _
     dictContratoUF("4600686987|SP") = True
     dictContratoUF("4600686987|ES") = True
     dictContratoUF("4600687006|BA") = True
+
+    ' =====================================================================================
+    ' CARREGAMENTO DA TABELAB: Mapeamento Localidade -> Centro -> UF -> Contrato
+    ' Valida se o contrato informado condiz com a localidade através da cadeia:
+    ' 1. Localidade (Col 36) -> Centro (Col 37)
+    ' 2. Centro (Col 38) -> UF (Col 45) e Município (Col 44)
+    ' 3. Grupo (Cols 56 e 60) e Contrato (Cols 1 e 4): UF -> Contrato(s) homologado(s)
+    ' =====================================================================================
+    Dim wsTabelaB As Worksheet
+    On Error Resume Next
+    Set wsTabelaB = wsRef.Parent.Sheets("TabelaB")
+    If wsTabelaB Is Nothing Then Set wsTabelaB = wsRef.Parent.Sheets("tabelaB")
+    On Error GoTo 0
+    
+    If Not wsTabelaB Is Nothing Then
+        Dim ulB As Long
+        ulB = wsTabelaB.UsedRange.Rows.Count
+        If ulB >= 2 Then
+            Dim vTB As Variant
+            Dim numColsB As Long
+            numColsB = wsTabelaB.UsedRange.Columns.Count
+            If numColsB < 60 Then numColsB = 65
+            
+            vTB = wsTabelaB.Range(wsTabelaB.Cells(1, 1), wsTabelaB.Cells(ulB, numColsB)).Value
+            
+            ' Dicionários temporários para resolução de relacionamentos
+            Dim dictCentroToUF As Object
+            Dim dictLocToCentro As Object
+            Dim dictUFToContratos As Object
+            Dim dictSAPToContrato As Object
+            
+            Set dictCentroToUF = CreateObject("Scripting.Dictionary")
+            Set dictLocToCentro = CreateObject("Scripting.Dictionary")
+            Set dictUFToContratos = CreateObject("Scripting.Dictionary")
+            Set dictSAPToContrato = CreateObject("Scripting.Dictionary")
+            
+            dictCentroToUF.CompareMode = vbTextCompare
+            dictLocToCentro.CompareMode = vbTextCompare
+            dictUFToContratos.CompareMode = vbTextCompare
+            dictSAPToContrato.CompareMode = vbTextCompare
+            
+            ' Equivalências contratuais SAP <-> Sigla
+            dictSAPToContrato("4600686987") = "IRON-LT1"
+            dictSAPToContrato("4600687006") = "PA-LT2"
+            dictSAPToContrato("4600617111") = "T2M"
+            dictSAPToContrato("IRON-LT1") = "4600686987"
+            dictSAPToContrato("PA-LT2") = "4600687006"
+            dictSAPToContrato("T2M") = "4600617111"
+            
+            Dim rB As Long
+            Dim sCen As String, sUFCen As String
+            Dim sLocNome As String, sCenLoc As String
+            Dim sUFGrupo As String, sContratoGrupo As String
+            
+            ' Passo 1: Carrega Centro -> UF (Cols 38 e 45)
+            For rB = 2 To UBound(vTB, 1)
+                sCen = UCase(Trim(Replace(CStr(vTB(rB, 38) & ""), "  ", " ")))
+                sUFCen = UCase(Trim(CStr(vTB(rB, 45) & "")))
+                If Len(sCen) > 0 And Len(sUFCen) > 0 Then
+                    If Not dictCentroToUF.Exists(sCen) Then
+                        dictCentroToUF(sCen) = sUFCen
+                    End If
+                End If
+            Next rB
+            
+            ' Passo 2: Carrega Grupo: UF -> Contrato (Cols 56 e 60)
+            For rB = 2 To UBound(vTB, 1)
+                sUFGrupo = UCase(Trim(CStr(vTB(rB, 56) & "")))
+                sContratoGrupo = UCase(Trim(CStr(vTB(rB, 60) & "")))
+                If Len(sUFGrupo) > 0 And Len(sContratoGrupo) > 0 Then
+                    If Not dictUFToContratos.Exists(sUFGrupo) Then
+                        dictUFToContratos(sUFGrupo) = sContratoGrupo
+                    Else
+                        If InStr(1, dictUFToContratos(sUFGrupo), sContratoGrupo, vbTextCompare) = 0 Then
+                            dictUFToContratos(sUFGrupo) = dictUFToContratos(sUFGrupo) & "|" & sContratoGrupo
+                        End If
+                    End If
+                End If
+            Next rB
+            
+            ' Fallbacks regionais contratuais homologados Petrobras
+            If Not dictUFToContratos.Exists("RJ") Then dictUFToContratos("RJ") = "IRON-LT1"
+            If Not dictUFToContratos.Exists("SP") Then dictUFToContratos("SP") = "IRON-LT1"
+            If Not dictUFToContratos.Exists("ES") Then dictUFToContratos("ES") = "IRON-LT1"
+            If Not dictUFToContratos.Exists("BA") Then dictUFToContratos("BA") = "PA-LT2"
+            If Not dictUFToContratos.Exists("SE") Then dictUFToContratos("SE") = "PA-LT2"
+            If Not dictUFToContratos.Exists("RN") Then dictUFToContratos("RN") = "PA-LT2"
+            If Not dictUFToContratos.Exists("AM") Then dictUFToContratos("AM") = "PA-LT2"
+            
+            ' Passo 3: Carrega Localidade -> Centro (Cols 36 e 37)
+            For rB = 2 To UBound(vTB, 1)
+                sLocNome = UCase(Trim(Replace(CStr(vTB(rB, 36) & ""), "  ", " ")))
+                sCenLoc = UCase(Trim(Replace(CStr(vTB(rB, 37) & ""), "  ", " ")))
+                If Len(sLocNome) > 0 Then
+                    If Len(sCenLoc) > 0 Then
+                        dictLocToCentro(sLocNome) = sCenLoc
+                    Else
+                        dictLocToCentro(sLocNome) = sLocNome
+                    End If
+                End If
+            Next rB
+            
+            ' Passo 4: Mapeia todas as Localidades cadastradas
+            Dim vLocKeys As Variant
+            Dim iL As Long
+            Dim sTargetLoc As String, sTargetCen As String, sTargetUF As String
+            Dim sContratosPerm As String, sContratoPrin As String
+            
+            vLocKeys = dictLocToCentro.Keys
+            For iL = 0 To UBound(vLocKeys)
+                sTargetLoc = CStr(vLocKeys(iL))
+                sTargetCen = dictLocToCentro(sTargetLoc)
+                sTargetUF = ""
+                
+                ' Tenta achar UF pelo Centro mapeado
+                If dictCentroToUF.Exists(sTargetCen) Then
+                    sTargetUF = dictCentroToUF(sTargetCen)
+                ElseIf dictCentroToUF.Exists(sTargetLoc) Then
+                    ' A própria localidade é o nome do Centro (ex: PORTO ENCONTRO DAS AGUAS)
+                    sTargetUF = dictCentroToUF(sTargetLoc)
+                    sTargetCen = sTargetLoc
+                End If
+                
+                If Len(sTargetUF) > 0 Then
+                    If dictUFToContratos.Exists(sTargetUF) Then
+                        sContratoPrin = dictUFToContratos(sTargetUF)
+                        ' Monta string de contratos permitidos para checagem rápida (|IRON-LT1|4600686987|IRON|)
+                        sContratosPerm = "|" & sContratoPrin & "|"
+                        If sContratoPrin = "IRON-LT1" Then
+                            sContratosPerm = sContratosPerm & "4600686987|IRON|"
+                        ElseIf sContratoPrin = "PA-LT2" Then
+                            sContratosPerm = sContratosPerm & "4600687006|PA|"
+                        ElseIf sContratoPrin = "T2M" Then
+                            sContratosPerm = sContratosPerm & "4600617111|"
+                        End If
+                        
+                        dictLocContrato(sTargetLoc) = sContratosPerm
+                        dictLocInfo(sTargetLoc) = sTargetUF & "|" & sTargetCen & "|" & sContratoPrin
+                    End If
+                End If
+            Next iL
+            
+            ' Passo 5: Registra também todos os Centros diretamente como Localidades
+            Dim vCenKeys As Variant
+            Dim iC As Long
+            vCenKeys = dictCentroToUF.Keys
+            For iC = 0 To UBound(vCenKeys)
+                sTargetCen = CStr(vCenKeys(iC))
+                If Not dictLocContrato.Exists(sTargetCen) Then
+                    sTargetUF = dictCentroToUF(sTargetCen)
+                    If dictUFToContratos.Exists(sTargetUF) Then
+                        sContratoPrin = dictUFToContratos(sTargetUF)
+                        sContratosPerm = "|" & sContratoPrin & "|"
+                        If sContratoPrin = "IRON-LT1" Then
+                            sContratosPerm = sContratosPerm & "4600686987|IRON|"
+                        ElseIf sContratoPrin = "PA-LT2" Then
+                            sContratosPerm = sContratosPerm & "4600687006|PA|"
+                        End If
+                        dictLocContrato(sTargetCen) = sContratosPerm
+                        dictLocInfo(sTargetCen) = sTargetUF & "|" & sTargetCen & "|" & sContratoPrin
+                    End If
+                End If
+            Next iC
+            
+            Set dictCentroToUF = Nothing
+            Set dictLocToCentro = Nothing
+            Set dictUFToContratos = Nothing
+            Set dictSAPToContrato = Nothing
+        End If
+    End If
 
 End Sub
 

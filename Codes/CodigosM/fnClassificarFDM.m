@@ -2,49 +2,11 @@ let
     // -------------------------------------------------------------------
     // fnClassificarFDM
     // -------------------------------------------------------------------
-    // Equivalente M dos procedimentos VBA analiseDeDados()/
-    // preenchimentoPrazoFDM() (modulo Planilha7) - classifica cada
-    // linha do painel em uma categoria de FDM (Normal/Expresso/Isento/
-    // FDM definido) e um Status de Prazo (NP/FP), com base no SLA
-    // calculado e na referencia de prazo da atividade.
-    //
-    // O QUE FAZ:
-    //   - calculoFDM = "S" -> linha ja e duplicata de FDM (mesma
-    //     atividade/solicitacao/OS ja vista antes) -> "FDM definido".
-    //   - refFDM = null/0 -> atividade fora do escopo de medicao de
-    //     FDM -> "Isento".
-    //   - refPrazo = "Tabela" -> valida campos obrigatorios (contrato,
-    //     datas, municipio, UF, grupo); calcula o SLA via
-    //     fnCalcularPrazoSLA e classifica em Normal/Expresso e NP/FP,
-    //     com regras especificas para IPF/ABF/RFT.
-    //   - refPrazo = "Fiscalizacao" -> compara prazo combinado x data
-    //     de fechamento; se prazo combinado estiver vazio, assume
-    //     Normal/NP (ajuste sem log de pendencia).
-    //   - Qualquer outro valor de refPrazo -> log de inconsistencia.
-    //
-    // AJUSTES APLICADOS:
-    //   - refPrazo = "Fiscalizacao" e prazoCombinado = null resulta em
-    //     Classificacao = "Normal", StatusPrazo = "NP", Log = "".
-    //   - Mensagens de observacao/log padronizadas sem acentos para
-    //     evitar problemas de incompatibilidade de codificacao.
-    //   - Suporte opcional a tabela de feriados para o calculo de SLA.
-    //
-    // PARAMETROS:
-    //   calculoFDM, refFDM, refPrazo, descricaoAtividade, contrato,
-    //   dataAbertura, horaAbertura, dataFechamento, prazoCombinado,
-    //   municipio, uf, grupo, dPrazo, aplicacao, optional tbFeriados
-    //
-    // RETORNO:
-    //   record [ Classificacao, StatusPrazo, Log ]
-    //
-    // DEPENDENCIA:
-    //   fnCalcularPrazoSLA (usada dentro do ramo refPrazo="Tabela")
-    // -------------------------------------------------------------------
     fnClassificarFDM = (
-        calculoFDM as text,
+        calculoFDM as nullable text,
         refFDM as any,
         refPrazo as nullable text,
-        descricaoAtividade as text,
+        descricaoAtividade as nullable text,
         contrato as nullable text,
         dataAbertura as nullable date,
         horaAbertura as nullable time,
@@ -82,7 +44,8 @@ let
                             let
                                 dtReSLA = fnCalcularPrazoSLA(dPrazo, dataAbertura, horaAbertura, municipio, uf, tbFeriados),
                                 DentroDoPrazo = dtReSLA >= dataFechamento,
-                                EhExpresso = Text.Contains(Text.Upper(descricaoAtividade), "EXPRESSO"),
+                                sDescAtiv = if descricaoAtividade = null then "" else descricaoAtividade,
+                                EhExpresso = Text.Contains(Text.Upper(sDescAtiv), "EXPRESSO"),
                                 ResultadoFinal =
                                     if DentroDoPrazo then
                                         if EhExpresso then
@@ -101,19 +64,15 @@ let
                                 ResultadoFinal
                 in
                     ResultadoTabela
-            else if refPrazo = "Fiscalizacao" or refPrazo = "Fiscalização" or (refPrazo <> null and Text.StartsWith(Text.Upper(refPrazo), "FISCALIZA")) then
-                if dataFechamento = null then
-                    [ Classificacao = null, StatusPrazo = null, Log = "D. fechamento vazio; " ]
-                else if prazoCombinado = null then
-                    // Ajuste aplicado nesta conversa: assume Normal/NP,
-                    // sem registrar pendencia de log
+            else if refPrazo = "Fiscalizacao" then
+                if prazoCombinado = null then
                     [ Classificacao = "Normal", StatusPrazo = "NP", Log = "" ]
                 else if prazoCombinado >= dataFechamento then
                     [ Classificacao = "Normal", StatusPrazo = "NP", Log = "" ]
                 else
                     [ Classificacao = "Normal", StatusPrazo = "FP", Log = "" ]
             else
-                [ Classificacao = null, StatusPrazo = null, Log = "Ref. prazo nao reconhecida; " ]
+                [ Classificacao = null, StatusPrazo = null, Log = "Atividade sem referencia de prazo; " ]
     in
         Resultado
 in

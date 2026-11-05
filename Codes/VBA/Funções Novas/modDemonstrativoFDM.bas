@@ -53,6 +53,12 @@ Private Sub ExecutarGeracaoFDM(ByVal bSilencioso As Boolean)
     sMsgErro = ""
     On Error GoTo TratarErro
 
+    On Error Resume Next
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+    On Error GoTo TratarErro
+
     Dim wsT2M As Worksheet, wsFDM As Worksheet, wsPainel As Worksheet
     Dim wbDest As Workbook
     Dim ws1 As Worksheet, ws2 As Worksheet, ws3 As Worksheet
@@ -154,6 +160,50 @@ Private Sub ExecutarGeracaoFDM(ByVal bSilencioso As Boolean)
             sStPrazo = UCase(Trim(CStr(vDados(r, colStatusPrazo))))
             sAtiv = Trim(CStr(vDados(r, colAtividade)))
 
+            ' Resolucao automatica de SLA e Diagnostico inteligente
+            Dim sLogOrig As String, sLogFinal As String
+            Dim sClassifResolv As String, sStatusResolv As String, sLogResolv As String
+            sLogOrig = Trim(CStr(vDados(r, colLogSLA)))
+            sClassifResolv = Trim(CStr(vDados(r, colClassifFDM)))
+            sStatusResolv = sStPrazo
+
+            If InStr(1, sLogOrig, "Erro no calculo", vbTextCompare) > 0 Or _
+               (sStPrazo = "" And (sRefF = "1" Or sRefF = "2") And UCase(Trim(CStr(vDados(r, colRefPrazo)))) = "TABELA" And UCase(Trim(CStr(vDados(r, colClassifFDM)))) <> "FDM DEFINIDO") Then
+                
+                ResolverSLAContingencia vDados(r, colDtAbertura), vDados(r, colDtFechamento), _
+                                        vDados(r, colPrazoSLA), vDados(r, colUF), _
+                                        vDados(r, colAtividade), vDados(r, colAplicacao), _
+                                        sClassifResolv, sStatusResolv, sLogResolv
+                
+                If sStatusResolv <> "" Then
+                    sStPrazo = sStatusResolv
+                    sLogFinal = ""
+                    ' Atualiza matriz em memoria
+                    vDados(r, colClassifFDM) = sClassifResolv
+                    vDados(r, colStatusPrazo) = sStatusResolv
+                    vDados(r, colLogSLA) = ""
+                    ' Sincroniza celulas na aba Painel T2M
+                    On Error Resume Next
+                    wsT2M.Cells(r, colClassifFDM).Value = sClassifResolv
+                    wsT2M.Cells(r, colStatusPrazo).Value = sStatusResolv
+                    wsT2M.Cells(r, colLogSLA).Value = ""
+                    On Error GoTo TratarErro
+                Else
+                    sLogFinal = DiagnosticarMotivoErroSLA(sLogOrig, _
+                                                         vDados(r, colContrato), _
+                                                         vDados(r, colDtAbertura), _
+                                                         vDados(r, colDtFechamento), _
+                                                         vDados(r, colPrazoCombinado), _
+                                                         vDados(r, colPrazoSLA), _
+                                                         vDados(r, colRefPrazo), _
+                                                         vDados(r, colMunicipio), _
+                                                         vDados(r, colUF), _
+                                                         vDados(r, colAtividade))
+                End If
+            Else
+                sLogFinal = sLogOrig
+            End If
+
             If InStr(sCont, "IRON") > 0 Then
                 sCont = "IRON-LT1"
             ElseIf InStr(sCont, "PA") > 0 Then
@@ -248,7 +298,7 @@ Private Sub ExecutarGeracaoFDM(ByVal bSilencioso As Boolean)
             vBaseSaida(nOrdensBase, 13) = lRefNumRow
             vBaseSaida(nOrdensBase, 14) = vDados(r, colRefPrazo)
             vBaseSaida(nOrdensBase, 15) = vDados(r, colPrazoSLA)
-            vBaseSaida(nOrdensBase, 16) = vDados(r, colClassifFDM)
+            vBaseSaida(nOrdensBase, 16) = sClassifResolv
             vBaseSaida(nOrdensBase, 17) = sStPrazo
             
             Dim bContaTSPE As Long, bContaTSPR As Long
@@ -263,28 +313,6 @@ Private Sub ExecutarGeracaoFDM(ByVal bSilencioso As Boolean)
                 bContaTSPR = 0
             End If
             
-            vBaseSaida(nOrdensBase, 18) = bContaTSPE
-            vBaseSaida(nOrdensBase, 19) = bContaTSPR
-            ' Diagnostico inteligente de erros de calculo SLA
-            Dim sLogOrig As String, sLogFinal As String
-            sLogOrig = Trim(CStr(vDados(r, colLogSLA)))
-
-            If InStr(1, sLogOrig, "Erro no calculo", vbTextCompare) > 0 Or _
-               (sStPrazo = "" And (sRefF = "1" Or sRefF = "2") And UCase(Trim(CStr(vDados(r, colRefPrazo)))) = "TABELA") Then
-                sLogFinal = DiagnosticarMotivoErroSLA(sLogOrig, _
-                                                     vDados(r, colContrato), _
-                                                     vDados(r, colDtAbertura), _
-                                                     vDados(r, colDtFechamento), _
-                                                     vDados(r, colPrazoCombinado), _
-                                                     vDados(r, colPrazoSLA), _
-                                                     vDados(r, colRefPrazo), _
-                                                     vDados(r, colMunicipio), _
-                                                     vDados(r, colUF), _
-                                                     vDados(r, colAtividade))
-            Else
-                sLogFinal = sLogOrig
-            End If
-
             vBaseSaida(nOrdensBase, 18) = bContaTSPE
             vBaseSaida(nOrdensBase, 19) = bContaTSPR
             vBaseSaida(nOrdensBase, 20) = sLogFinal
@@ -607,16 +635,18 @@ Private Sub ExecutarGeracaoFDM(ByVal bSilencioso As Boolean)
     AjustarLargurasAtividades ws2
     AjustarLargurasBase ws3
 
-    ' Salvar arquivos (na pasta MEDIÇÃO e na raiz)
+    ' Salvar arquivos (na pasta MEDICAO e na raiz)
     On Error Resume Next
-    Kill sCaminhoFinalMedicao
-    Kill sCaminhoFinalRaiz
+    Application.DisplayAlerts = False
+    If Dir(sCaminhoFinalMedicao) <> "" Then Kill sCaminhoFinalMedicao
+    If Dir(sCaminhoFinalRaiz) <> "" Then Kill sCaminhoFinalRaiz
     On Error GoTo TratarErro
 
     wbDest.SaveAs Filename:=sCaminhoFinalMedicao, FileFormat:=51
     wbDest.SaveCopyAs Filename:=sCaminhoFinalRaiz
     wbDest.Close SaveChanges:=False
     Set wbDest = Nothing
+    Application.DisplayAlerts = True
 
     ' Atualizar link na aba Painel
     If Not wsPainel Is Nothing Then
@@ -639,6 +669,11 @@ Private Sub ExecutarGeracaoFDM(ByVal bSilencioso As Boolean)
     End If
 
     ' Mensagem de sucesso
+    On Error Resume Next
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+
     If Not bSilencioso Then
         MsgBox "Demonstrativo de Calculo FDM / TSPE / IAPFARQ gerado com sucesso!" & vbNewLine & vbNewLine & _
                "Resumo Contratual Apurado:" & vbNewLine & _
@@ -656,6 +691,10 @@ Private Sub ExecutarGeracaoFDM(ByVal bSilencioso As Boolean)
     Exit Sub
 
 TratarErro:
+    On Error Resume Next
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
     If Len(sMsgErro) = 0 Then sMsgErro = "Erro " & Err.Number & ": " & Err.Description
     On Error Resume Next
     If Not wbDest Is Nothing Then
@@ -1047,4 +1086,182 @@ Private Function DiagnosticarMotivoErroSLA(ByVal sLogAtual As String, _
 TratarErro:
     DiagnosticarMotivoErroSLA = "Erro no calculo: falha no diagnostico interno (" & Err.Description & "); "
 End Function
+
+' ==============================================================================
+' MOTOR DE CALCULO DE CONTINGENCIA SLA / FERIADOS CONTRATUAIS PETROBRAS
+' ==============================================================================
+Private Function EhDiaUtilContingencia(ByVal dData As Date, ByVal sUF As String) As Boolean
+    Dim iDow As Integer
+    iDow = Weekday(dData, vbMonday)
+    If iDow >= 6 Then
+        EhDiaUtilContingencia = False
+        Exit Function
+    End If
+
+    Dim dOnly As Date
+    dOnly = DateSerial(Year(dData), Month(dData), Day(dData))
+
+    ' Feriados Nacionais homologados
+    Select Case dOnly
+        Case DateSerial(Year(dData), 1, 1): EhDiaUtilContingencia = False: Exit Function
+        Case DateSerial(Year(dData), 4, 21): EhDiaUtilContingencia = False: Exit Function
+        Case DateSerial(Year(dData), 5, 1): EhDiaUtilContingencia = False: Exit Function
+        Case DateSerial(Year(dData), 9, 7): EhDiaUtilContingencia = False: Exit Function
+        Case DateSerial(Year(dData), 10, 12): EhDiaUtilContingencia = False: Exit Function
+        Case DateSerial(Year(dData), 11, 2): EhDiaUtilContingencia = False: Exit Function
+        Case DateSerial(Year(dData), 11, 15): EhDiaUtilContingencia = False: Exit Function
+        Case DateSerial(Year(dData), 12, 25): EhDiaUtilContingencia = False: Exit Function
+    End Select
+
+    ' Feriados Estaduais
+    If sUF = "RJ" And dOnly = DateSerial(Year(dData), 4, 23) Then EhDiaUtilContingencia = False: Exit Function
+    If sUF = "BA" And dOnly = DateSerial(Year(dData), 7, 2) Then EhDiaUtilContingencia = False: Exit Function
+    If sUF = "SP" And dOnly = DateSerial(Year(dData), 7, 9) Then EhDiaUtilContingencia = False: Exit Function
+
+    EhDiaUtilContingencia = True
+End Function
+
+Private Function CalcularLimiteSLAContingencia(ByVal dtAber As Date, ByVal dPrazoDias As Double, ByVal sUF As String) As Date
+    Dim dMinRestantes As Double
+    dMinRestantes = dPrazoDias * 8# * 60#
+
+    Dim curDate As Date, h As Double
+    curDate = DateSerial(Year(dtAber), Month(dtAber), Day(dtAber))
+    h = CDbl(Hour(dtAber)) + CDbl(Minute(dtAber)) / 60# + CDbl(Second(dtAber)) / 3600#
+
+    Do While Not EhDiaUtilContingencia(curDate, sUF)
+        curDate = curDate + 1
+        h = 8#
+    Loop
+
+    If h < 8# Then
+        h = 8#
+    ElseIf h >= 17# Then
+        curDate = curDate + 1
+        Do While Not EhDiaUtilContingencia(curDate, sUF)
+            curDate = curDate + 1
+        Loop
+        h = 8#
+    ElseIf h >= 12# And h < 13# Then
+        h = 13#
+    End If
+
+    Dim dispManha As Double, dispTarde As Double
+    Do While dMinRestantes > 0
+        If Not EhDiaUtilContingencia(curDate, sUF) Then
+            curDate = curDate + 1
+            h = 8#
+        Else
+            If h < 12# Then
+                dispManha = (12# - h) * 60#
+                If dMinRestantes <= dispManha Then
+                    h = h + dMinRestantes / 60#
+                    dMinRestantes = 0
+                    Exit Do
+                Else
+                    dMinRestantes = dMinRestantes - dispManha
+                    h = 13#
+                End If
+            End If
+
+            If h >= 13# And h < 17# Then
+                dispTarde = (17# - h) * 60#
+                If dMinRestantes <= dispTarde Then
+                    h = h + dMinRestantes / 60#
+                    dMinRestantes = 0
+                    Exit Do
+                Else
+                    dMinRestantes = dMinRestantes - dispTarde
+                    curDate = curDate + 1
+                    h = 8#
+                    Do While Not EhDiaUtilContingencia(curDate, sUF)
+                        curDate = curDate + 1
+                    Loop
+                End If
+            End If
+        End If
+    Loop
+
+    Dim iHour As Long, iMin As Long
+    iHour = Int(h)
+    iMin = CLng(Round((h - CDbl(iHour)) * 60#, 0))
+    If iMin >= 60 Then
+        iHour = iHour + 1
+        iMin = 0
+    End If
+
+    CalcularLimiteSLAContingencia = DateSerial(Year(curDate), Month(curDate), Day(curDate)) + TimeSerial(iHour, iMin, 0)
+End Function
+
+Private Sub ResolverSLAContingencia(ByVal vDtAber As Variant, ByVal vDtFech As Variant, _
+                                   ByVal vPrazoSLA As Variant, ByVal vUF As Variant, _
+                                   ByVal vAtiv As Variant, ByVal vAplic As Variant, _
+                                   ByRef sOutClassif As String, ByRef sOutStatus As String, _
+                                   ByRef sOutLog As String)
+    On Error GoTo TratarErroLocal
+
+    Dim dtAber As Date, dtFech As Date, dPrazo As Double
+    Dim sUF As String, sAtiv As String, sAplic As String
+
+    If IsDate(vDtAber) Then
+        dtAber = CDate(vDtAber)
+    ElseIf IsNumeric(vDtAber) Then
+        dtAber = CDate(CDbl(vDtAber))
+    Else
+        sOutClassif = "": sOutStatus = "": sOutLog = "Erro: Data de abertura invalida": Exit Sub
+    End If
+
+    If IsDate(vDtFech) Then
+        dtFech = CDate(vDtFech)
+    ElseIf IsNumeric(vDtFech) Then
+        dtFech = CDate(CDbl(vDtFech))
+    Else
+        sOutClassif = "": sOutStatus = "": sOutLog = "Erro: Data de fechamento invalida": Exit Sub
+    End If
+
+    If IsNumeric(vPrazoSLA) Then
+        dPrazo = CDbl(vPrazoSLA)
+    Else
+        dPrazo = 0
+    End If
+
+    If dPrazo <= 0 Then
+        sOutClassif = "": sOutStatus = "": sOutLog = "Erro: Prazo SLA nulo ou zero": Exit Sub
+    End If
+
+    sUF = UCase(Trim(CStr(vUF)))
+    sAtiv = UCase(Trim(CStr(vAtiv)))
+    sAplic = UCase(Trim(CStr(vAplic)))
+
+    Dim dtLimite As Date, bDentro As Boolean
+    dtLimite = CalcularLimiteSLAContingencia(dtAber, dPrazo, sUF)
+    bDentro = (dtFech <= dtLimite)
+
+    Dim bExpresso As Boolean
+    bExpresso = (InStr(sAtiv, "EXPRESSO") > 0)
+
+    If bDentro Then
+        If bExpresso Then
+            If sAplic = "IPF" Then
+                sOutClassif = "Normal": sOutStatus = "FP"
+            Else
+                sOutClassif = "Expresso": sOutStatus = "NP"
+            End If
+        Else
+            sOutClassif = "Normal": sOutStatus = "NP"
+        End If
+    Else
+        If sAplic = "ABF" Or sAplic = "RFT" Then
+            sOutClassif = IIf(bExpresso, "Expresso", "Normal"): sOutStatus = "NP"
+        Else
+            sOutClassif = "Normal": sOutStatus = "FP"
+        End If
+    End If
+
+    sOutLog = ""
+    Exit Sub
+
+TratarErroLocal:
+    sOutClassif = "": sOutStatus = "": sOutLog = "Erro no calculo: " & Err.Description
+End Sub
 

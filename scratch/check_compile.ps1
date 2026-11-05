@@ -1,32 +1,23 @@
-$xl = New-Object -ComObject Excel.Application
-$xl.Visible = $false
-$xl.DisplayAlerts = $false
-$xl.AutomationSecurity = 1
+$excel = New-Object -ComObject Excel.Application
+$excel.Visible = $false
+$excel.DisplayAlerts = $false
+$excel.AutomationSecurity = 1
+
+$wb = $excel.Workbooks.Open('D:\PainelNovo-main\Monitoramento\Monitoramento individual_DPBR_v4.xlsm')
 
 try {
-    $filePath = 'D:\PainelNovo-main\Painel de controle MemoriaPetrobras V84.xlsm'
-    $wb = $xl.Workbooks.Open($filePath)
-    
-    # Try compiling VBA Project
-    Write-Host "Triggering VBA Compile..."
-    # Id 578 is the Debug > Compile menu command
-    $control = $xl.VBE.CommandBars.FindControl($null, 578)
-    if ($control -ne $null) {
-        Write-Host "Compile control found, Enabled: $($control.Enabled)"
-        if ($control.Enabled) {
-            $control.Execute()
-            Write-Host "Compile executed!"
-        } else {
-            Write-Host "Project is already compiled or not dirty."
-        }
+    # Try to compile
+    $cmd = $excel.VBE.CommandBars.FindControl($null, 578)
+    if ($cmd -ne $null -and $cmd.Enabled) {
+        $cmd.Execute()
+        Write-Host "VBA Project compiled without errors!"
     } else {
-        Write-Host "Compile control not found."
+        Write-Host "Compile button not enabled (may already be compiled or not accessible)."
     }
-    $wb.Close($false)
 } catch {
-    Write-Host "Exception: $($_.Exception.Message)"
-} finally {
-    $xl.Quit()
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($xl) | Out-Null
+    Write-Host "Error compiling: $($_.Exception.Message)"
 }
 
+$wb.Close($false)
+$excel.Quit()
+[System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null
