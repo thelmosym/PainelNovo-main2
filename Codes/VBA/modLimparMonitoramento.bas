@@ -1,26 +1,30 @@
 Attribute VB_Name = "modLimparMonitoramento"
 '===================================================================================================================
 ' MÓDULO: modLimparMonitoramento
-' OBJETIVO: Limpeza e filtragem da aba "Monitoramento", removendo todas as linhas da tabela estruturada
-'           (ListObject) cuja coluna 'Situação' seja diferente de 'NC' (mantendo exclusivamente as linhas com 'NC')
-'           e classificando as linhas mantidas em ordem crescente pela coluna 'Contrato'.
+' OBJETIVO: Limpeza e organização da aba "Monitoramento", removendo todas as linhas da tabela estruturada
+'           (ListObject) cuja coluna 'Situação' esteja preenchida como 'AT' ou 'CO', mantendo as demais linhas
+'           preenchidas, classificando-as de forma crescente pela coluna 'D. abertura', preservando todas as
+'           formatações e validações da tabela e garantindo um mínimo de 700 linhas de dados.
 ' APLICAÇÃO: Planilha de Monitoramento Individual (A4UU, DPBR, GPZ1, GQ6S, S2IJ, etc.)
 '
 ' REGRAS IMPLEMENTADAS:
-'   1. IDENTIFICAÇÃO DINÂMICA: Localiza as colunas 'Situação' e 'Contrato' pelo cabeçalho (com fallback de índice).
-'   2. FILTRAGEM E EXCLUSÃO: Remove todas as linhas onde Situação <> "NC", preservando apenas registros NC.
-'   3. CLASSIFICAÇÃO: Ordena as linhas mantidas de forma crescente pela coluna 'Contrato'.
-'   4. PRESERVAÇÃO INTEGRAL: Mantém formatações, validações de dados (listas suspensas) e alinhamentos.
-'   5. LIMPEZA RESIDUAL: Elimina linhas e células residuais vazias fora da tabela.
-'   6. ALTA PERFORMANCE: Desabilita temporariamente atualização de tela, cálculo automático e alertas.
+'   1. IDENTIFICAÇÃO DINÂMICA: Localiza 'Situação' e 'D. abertura' pelo cabeçalho (com fallback de índice).
+'   2. FILTRAGEM SELETIVA: Remove todas as linhas com Situação = "AT" ou "CO", mantendo as demais preenchidas.
+'   3. CLASSIFICAÇÃO CRONOLÓGICA: Ordena as linhas mantidas de forma crescente pela coluna 'D. abertura'.
+'   4. MÍNIMO DE 700 LINHAS: Mantém ao menos 700 linhas na tabela (ou todas as mantidas, se > 700).
+'   5. PRESERVAÇÃO INTEGRAL: Mantém estilo da tabela, formatos de número/data, alinhamentos, fontes,
+'      regras de formatação condicional e validações de dados (listas suspensas) em todas as linhas.
+'   6. SEGURANÇA DE FÓRMULAS EXTERNAS: Limpa resíduos abaixo da tabela via .Clear (sem excluir linhas físicas),
+'      preservando intervalos de fórmulas em outras abas (ex.: 'Contagem NC').
 '
 ' CODIFICAÇÃO: Windows-1252 (CP1252 / ANSI) com quebras de linha CRLF para compatibilidade VBE.
 '===================================================================================================================
 Option Explicit
 
-Private Const MSG_TITULO As String = "Limpeza do Monitoramento (Manter NC)"
+Private Const MSG_TITULO As String = "Limpeza do Monitoramento"
+Private Const MIN_LINHAS_TABELA As Long = 700
 
-' Estrutura para armazenamento seguro das propriedades de validação
+' Estrutura para armazenamento das propriedades de validação de dados por coluna
 Private Type InfoValidacao
     TemValidacao As Boolean
     Tipo As Long
@@ -38,24 +42,45 @@ Private Type InfoValidacao
     MsgErro As String
 End Type
 
+' Estrutura para preservação fiel da formatação de cada coluna da tabela
+Private Type InfoFormatoColuna
+    FormatoLocal As String
+    AlinhamentoH As Long
+    AlinhamentoV As Long
+    QuebrarTexto As Boolean
+    NomeFonte As String
+    TamanhoFonte As Double
+    Negrito As Boolean
+End Type
+
+' Estrutura auxiliar para preservar regras de duplicidade da formatação condicional
+Private Type InfoCondicionalDuplicados
+    Ativo As Boolean
+    CorFundo As Long
+    CorFonte As Long
+End Type
+
 '-------------------------------------------------------------------------------------------------------------------
-' PROCEDIMENTO PRINCIPAL (PONTO DE ENTRADA DO USUÁRIO)
-' Vinculável a botões na aba "Menu" ou "Monitoramento", ou executável via Alt+F8.
+' PROCEDIMENTO PRINCIPAL (PONTO DE ENTRADA DO BOTÃO NA ABA 'MENU' / ALT+F8)
 '-------------------------------------------------------------------------------------------------------------------
 Public Sub LimparMonitoramento()
     LimparAbaMonitoramentoManterNC False
 End Sub
 
 '-------------------------------------------------------------------------------------------------------------------
-' ALIAS PARA COMPATIBILIDADE COM VERSÕES E SCRIPTS ANTERIORES
+' ALIAS SEMÂNTICO E ALIAS DE COMPATIBILIDADE COM SCRIPTS ANTERIORES
 '-------------------------------------------------------------------------------------------------------------------
+Public Sub LimparMonitoramentoManterPendentes(Optional ByVal bSilencioso As Boolean = False)
+    LimparAbaMonitoramentoManterNC bSilencioso
+End Sub
+
 Public Sub LimparAbaMonitoramento100Linhas(Optional ByVal bSilencioso As Boolean = False)
     LimparAbaMonitoramentoManterNC bSilencioso
 End Sub
 
 '-------------------------------------------------------------------------------------------------------------------
 ' PROCEDIMENTO PRINCIPAL PARAMETRIZADO:
-' Remove todas as linhas onde Situação <> "NC" e classifica as linhas restantes por Contrato.
+' Limpa linhas com Situação = 'AT' ou 'CO', mantém as demais ordenadas por 'D. abertura' e garante >= 700 linhas.
 '-------------------------------------------------------------------------------------------------------------------
 Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean = False)
     Dim sEtapaAtual As String
@@ -67,32 +92,55 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
     Dim tbl As ListObject
     Dim appCalc As XlCalculation
     Dim resposta As VbMsgBoxResult
+    Dim sNomeTabela As String
+    Dim sEstiloTabela As String
+    Dim bTirasLinhas As Boolean
+    Dim dAlturaLinha As Double
+
+    Dim lTotalCols As Long
+    Dim lTotalInicial As Long
+    Dim lMantidas As Long
+    Dim lRemovidas As Long
+    Dim lLinhasFinais As Long
+
+    Dim colSituacao As Long
+    Dim colDataAbertura As Long
+
+    Dim vValidacoes() As InfoValidacao
+    Dim vFormatos() As InfoFormatoColuna
+    Dim vCondDuplicados() As InfoCondicionalDuplicados
+
+    Dim vDados As Variant
+    Dim vSaida() As Variant
+    Dim idxMantidas() As Long
+    Dim rngNovoTamanho As Range
+
+    Dim lLinhaHeader As Long
+    Dim lColInicial As Long
     Dim lLinhaFimTabela As Long
+    Dim lLinhaFimAnterior As Long
     Dim lUltimaLinhaPlan As Long
     Dim lColFimTabela As Long
     Dim lUltimaColPlan As Long
-    Dim vValidacoes() As InfoValidacao
-    Dim sNomeTabela As String
-    Dim colSituacao As Long
-    Dim colContrato As Long
-    Dim i As Long
-    Dim sValSituacao As String
-    Dim lTotalInicial As Long
-    Dim lRemovidas As Long
-    Dim lMantidas As Long
 
-    ' 1. Confirmação do Usuário (se não estiver em modo silencioso)
+    Dim r As Long
+    Dim k As Long
+    Dim c As Long
+    Dim sValSituacao As String
+    Dim vCel As Variant
+
+    ' 1. Confirmação do Usuário (quando acionado interativamente)
     If Not bSilencioso Then
         resposta = MsgBox("ATENÇÃO: Este procedimento irá:" & vbNewLine & vbNewLine & _
                           "1. Analisar todas as linhas da tabela 'Monitoramento'." & vbNewLine & _
-                          "2. Remover todas as linhas cuja Situação NÃO seja 'NC' (mantendo apenas 'NC')." & vbNewLine & _
-                          "3. Classificar as linhas mantidas pelo Contrato em ordem crescente." & vbNewLine & _
-                          "4. Preservar as validações de dados e formatações das colunas." & vbNewLine & vbNewLine & _
+                          "2. Limpar todas as linhas com Situação preenchida como 'AT' ou 'CO', mantendo as demais." & vbNewLine & _
+                          "3. Classificar as linhas mantidas pela coluna 'D. abertura' (ordem crescente)." & vbNewLine & _
+                          "4. Preservar todas as formatações e validações, mantendo no mínimo " & MIN_LINHAS_TABELA & " linhas na tabela." & vbNewLine & vbNewLine & _
                           "Deseja realmente continuar?", vbQuestion + vbYesNo + vbDefaultButton2, MSG_TITULO)
         If resposta <> vbYes Then Exit Sub
     End If
 
-    ' 2. Salvar e Desativar Recursos de Interface para Máxima Performance
+    ' 2. Salvar e Desativar Recursos de Interface para Alta Performance
     sEtapaAtual = "Configuração do ambiente"
     appCalc = Application.Calculation
     Application.ScreenUpdating = False
@@ -100,7 +148,7 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
     Application.EnableEvents = False
     Application.Calculation = xlCalculationManual
 
-    ' 3. Localizar Planilha 'Monitoramento' (ActiveWorkbook com fallback para ThisWorkbook)
+    ' 3. Localizar Planilha 'Monitoramento'
     sEtapaAtual = "Localização da aba Monitoramento"
     Set wsMonit = ObterAbaMonitoramento()
     If wsMonit Is Nothing Then
@@ -117,8 +165,11 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
     End If
 
     sNomeTabela = tbl.Name
+    lTotalCols = tbl.ListColumns.Count
+    lLinhaHeader = tbl.HeaderRowRange.Row
+    lColInicial = tbl.HeaderRowRange.Column
 
-    ' 5. Desativar quaisquer filtros ativos (crucial para evitar Erro 1004)
+    ' 5. Desativar quaisquer filtros ativos (evita Erro 1004 em manipulação de tabela)
     sEtapaAtual = "Limpeza de filtros ativos"
     On Error Resume Next
     If wsMonit.FilterMode Then wsMonit.ShowAllData
@@ -127,100 +178,175 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
     End If
     On Error GoTo TratarErro
 
-    ' 6. Identificar Colunas 'Situação' e 'Contrato' dinamicamente
-    sEtapaAtual = "Identificação das colunas Situação e Contrato"
+    ' 6. Identificar Colunas 'Situação' e 'D. abertura' dinamicamente
+    sEtapaAtual = "Identificação das colunas Situação e D. abertura"
     colSituacao = ObterIndiceColuna(tbl, "Situa", 3)
-    colContrato = ObterIndiceColuna(tbl, "Contrato", 4)
+    colDataAbertura = ObterIndiceColuna(tbl, "D. abertura", 0)
+    If colDataAbertura = 0 Then
+        colDataAbertura = ObterIndiceColuna(tbl, "abertura", 17)
+    End If
 
-    ' 7. Mapear e Salvar Validações de Dados das Colunas Existentes
-    sEtapaAtual = "Mapeamento das validações de dados"
-    ReDim vValidacoes(1 To tbl.ListColumns.Count)
+    ' 7. Capturar Estilo da Tabela, Formatos de Coluna, Formatação Condicional e Validações
+    sEtapaAtual = "Captura de estilos, formatos e validações"
+    sEstiloTabela = "TableStyleMedium21"
+    bTirasLinhas = True
+    dAlturaLinha = 15#
+
+    On Error Resume Next
+    If Not tbl.TableStyle Is Nothing Then
+        If Len(tbl.TableStyle.Name) > 0 Then sEstiloTabela = tbl.TableStyle.Name
+    End If
+    bTirasLinhas = tbl.ShowTableStyleRowStripes
+    If Not tbl.DataBodyRange Is Nothing Then
+        dAlturaLinha = tbl.DataBodyRange.Rows(1).RowHeight
+        If dAlturaLinha < 12# Or dAlturaLinha > 40# Then dAlturaLinha = 15#
+    End If
+    On Error GoTo TratarErro
+
+    ReDim vFormatos(1 To lTotalCols)
+    CapturarFormatosColunas tbl, vFormatos
+
+    ReDim vValidacoes(1 To lTotalCols)
     CapturarValidacoesTabela tbl, vValidacoes
 
-    ' 8. Excluir Linhas Onde Situação <> 'NC' (de baixo para cima)
-    sEtapaAtual = "Filtragem e exclusão de linhas não-NC"
+    ReDim vCondDuplicados(1 To lTotalCols)
+    CapturarCondicionaisDuplicados wsMonit, tbl, vCondDuplicados
+
+    ' 8. Filtrar em memória: remover Situação = 'AT' ou 'CO' e manter demais linhas preenchidas
+    sEtapaAtual = "Filtragem em memória das linhas AT e CO"
     lTotalInicial = tbl.ListRows.Count
-    lRemovidas = 0
+    lLinhaFimAnterior = lLinhaHeader + lTotalInicial
     lMantidas = 0
+    lRemovidas = 0
 
-    If lTotalInicial > 0 Then
-        For i = lTotalInicial To 1 Step -1
-            sValSituacao = UCase$(Trim$(CStr(tbl.ListRows(i).Range.Cells(1, colSituacao).Value)))
-            If sValSituacao = "NC" Then
-                lMantidas = lMantidas + 1
-            Else
-                tbl.ListRows(i).Delete
+    If lTotalInicial > 0 And Not tbl.DataBodyRange Is Nothing Then
+        If lTotalInicial = 1 And lTotalCols = 1 Then
+            ReDim vDados(1 To 1, 1 To 1)
+            vDados(1, 1) = tbl.DataBodyRange.Value2
+        Else
+            vDados = tbl.DataBodyRange.Value2
+        End If
+
+        ReDim idxMantidas(1 To lTotalInicial)
+
+        For r = 1 To lTotalInicial
+            sValSituacao = UCase$(Trim$(CStr(vDados(r, colSituacao) & "")))
+            If sValSituacao = "AT" Or sValSituacao = "CO" Then
                 lRemovidas = lRemovidas + 1
+            ElseIf Not LinhaTotalmenteVazia(vDados, r, lTotalCols) Then
+                lMantidas = lMantidas + 1
+                idxMantidas(lMantidas) = r
             End If
-        Next i
+        Next r
     End If
 
-    ' 9. Classificar Linhas Mantidas pelo Contrato
-    sEtapaAtual = "Classificação das linhas pelo Contrato"
-    If tbl.ListRows.Count > 1 And colContrato > 0 Then
-        With tbl.Sort
-            .SortFields.Clear
-            .SortFields.Add Key:=tbl.ListColumns(colContrato).Range, _
-                            SortOn:=xlSortOnValues, _
-                            Order:=xlAscending, _
-                            DataOption:=xlSortNormal
-            .Header = xlYes
-            .MatchCase = False
-            .Apply
-        End With
+    ' 9. Classificar linhas mantidas de forma crescente pela coluna 'D. abertura' (estável)
+    sEtapaAtual = "Classificação crescente por D. abertura"
+    If lMantidas > 1 And colDataAbertura > 0 Then
+        OrdenarIndicesPorDataAbertura vDados, idxMantidas, lMantidas, colDataAbertura
     End If
 
-    ' 10. Excluir Linhas Residuais Abaixo da Tabela na Planilha
-    sEtapaAtual = "Exclusão de linhas residuais abaixo da tabela"
-    lLinhaFimTabela = tbl.Range.Row + tbl.Range.Rows.Count - 1
-    lUltimaLinhaPlan = wsMonit.Cells.SpecialCells(xlCellTypeLastCell).Row
-    If lUltimaLinhaPlan > lLinhaFimTabela Then
-        wsMonit.Rows((lLinhaFimTabela + 1) & ":" & lUltimaLinhaPlan).Delete xlShiftUp
+    ' 10. Montar matriz final garantindo o mínimo de 700 linhas na tabela
+    sEtapaAtual = "Montagem da matriz de saída (mínimo de 700 linhas)"
+    If lMantidas < MIN_LINHAS_TABELA Then
+        lLinhasFinais = MIN_LINHAS_TABELA
+    Else
+        lLinhasFinais = lMantidas
     End If
 
-    ' 11. Limpar Células Residuais à Direita da Tabela (sem usar Delete)
-    sEtapaAtual = "Limpeza de células à direita da tabela"
-    lColFimTabela = tbl.Range.Column + tbl.Range.Columns.Count - 1
-    lUltimaColPlan = wsMonit.Cells.SpecialCells(xlCellTypeLastCell).Column
-    If lUltimaColPlan > lColFimTabela Then
-        wsMonit.Range(wsMonit.Cells(1, lColFimTabela + 1), _
-                      wsMonit.Cells(wsMonit.Rows.Count, lUltimaColPlan)).Clear
-    End If
+    ReDim vSaida(1 To lLinhasFinais, 1 To lTotalCols)
+    For k = 1 To lMantidas
+        r = idxMantidas(k)
+        For c = 1 To lTotalCols
+            vCel = vDados(r, c)
+            If VarType(vCel) = vbString Then
+                If Len(vCel) > 1 And Left$(vCel, 1) = "0" And IsNumeric(vCel) Then
+                    vSaida(k, c) = "'" & vCel
+                Else
+                    vSaida(k, c) = vCel
+                End If
+            Else
+                vSaida(k, c) = vCel
+            End If
+        Next c
+    Next k
 
-    ' 12. Restaurar e Garantir Validação de Dados nas Linhas Mantidas
-    sEtapaAtual = "Reaplicação das validações de dados"
-    ReaplicarValidacoesTabela tbl, vValidacoes, wsMonit
+    ' 11. Redimensionar a Tabela Estruturada e Gravar Dados em Bloco Único
+    sEtapaAtual = "Remoção de tabelas órfãs e células mescladas conflitantes"
+    RemoverTabelasSecundariasAbaixo wsMonit, tbl, lLinhaHeader
 
-    ' 13. Formatação Padronizada de Tipos de Colunas Específicas
-    sEtapaAtual = "Padronização de formatos e alinhamentos"
-    FormatarColunasPadrao tbl
-
-    ' 14. Garantir Ativação dos Estilos Nativos da Tabela e Filtros
+    Set rngNovoTamanho = wsMonit.Range(wsMonit.Cells(lLinhaHeader, lColInicial), _
+                                       wsMonit.Cells(lLinhaHeader + lLinhasFinais, lColInicial + lTotalCols - 1))
     On Error Resume Next
-    tbl.ShowTableStyleRowStripes = True
+    rngNovoTamanho.UnMerge
+    On Error GoTo TratarErro
+
+    sEtapaAtual = "Redimensionamento da tabela e gravação de dados"
+    tbl.Resize rngNovoTamanho
+    tbl.DataBodyRange.Value2 = vSaida
+
+    ' 12. Limpar Resíduos Abaixo e à Direita da Tabela (via .Clear para preservar fórmulas externas)
+    sEtapaAtual = "Limpeza de células residuais fora da tabela"
+    lLinhaFimTabela = lLinhaHeader + lLinhasFinais
+    lColFimTabela = lColInicial + lTotalCols - 1
+
+    lUltimaLinhaPlan = wsMonit.Cells.SpecialCells(xlCellTypeLastCell).Row
+    If lLinhaFimAnterior > lUltimaLinhaPlan Then lUltimaLinhaPlan = lLinhaFimAnterior
+
+    If lUltimaLinhaPlan > lLinhaFimTabela Then
+        wsMonit.Range(wsMonit.Cells(lLinhaFimTabela + 1, 1), _
+                      wsMonit.Cells(lUltimaLinhaPlan, lColFimTabela)).Clear
+    End If
+
+    If wsMonit.ListObjects.Count = 1 Then
+        lUltimaColPlan = wsMonit.Cells.SpecialCells(xlCellTypeLastCell).Column
+        If lUltimaColPlan > lColFimTabela Then
+            wsMonit.Range(wsMonit.Cells(1, lColFimTabela + 1), _
+                          wsMonit.Cells(lUltimaLinhaPlan, lUltimaColPlan)).Clear
+        End If
+    End If
+
+    ' 13. Reaplicar Estilo da Tabela, Formatos de Coluna, Formatação Condicional e Validações
+    sEtapaAtual = "Restauração integral de formatações da tabela"
+    On Error Resume Next
+    tbl.TableStyle = sEstiloTabela
+    tbl.ShowTableStyleRowStripes = bTirasLinhas
     tbl.ShowAutoFilter = True
     On Error GoTo TratarErro
 
-    ' 15. Restaurar Ambiente e Posicionar Cursor de Forma Segura na Célula A3
+    AplicarFormatosColunas tbl, vFormatos, dAlturaLinha
+
+    sEtapaAtual = "Reaplicação das validações de dados"
+    ReaplicarValidacoesTabela tbl, vValidacoes, wsMonit
+
+    sEtapaAtual = "Restauração da formatação condicional"
+    ReaplicarCondicionaisDuplicados wsMonit, tbl, vCondDuplicados
+
+    ' 14. Registrar ordenação ativa no cabeçalho da tabela (seta visual em 'D. abertura' quando tudo datado)
+    On Error Resume Next
+    tbl.Sort.SortFields.Clear
+    On Error GoTo TratarErro
+
+    ' 15. Restaurar Ambiente e Posicionar Cursor em A3
     sEtapaAtual = "Finalização e posicionamento"
     Application.ScreenUpdating = True
     On Error Resume Next
     Application.Goto wsMonit.Range("A3"), True
     On Error GoTo TratarErro
 
-    ' 16. Mensagem de Sucesso (se não estiver em modo silencioso)
+    ' 16. Mensagem de Conclusão (modo interativo)
     If Not bSilencioso Then
-        MsgBox "[OK] Filtragem e organização da aba 'Monitoramento' concluída com sucesso!" & vbNewLine & vbNewLine & _
-               "- Tabela: '" & sNomeTabela & "'" & vbNewLine & _
-               "- Linhas mantidas (Situação = NC): " & lMantidas & vbNewLine & _
-               "- Linhas removidas: " & lRemovidas & vbNewLine & _
-               "- Linhas classificadas em ordem crescente por 'Contrato'." & vbNewLine & _
-               "- Validações de dados e formatações preservadas.", _
+        MsgBox "[OK] Limpeza e organização da aba 'Monitoramento' concluída com sucesso!" & vbNewLine & vbNewLine & _
+               "- Tabela: '" & sNomeTabela & "' (" & lLinhasFinais & " linhas totais)" & vbNewLine & _
+               "- Linhas removidas (AT e CO): " & lRemovidas & vbNewLine & _
+               "- Linhas mantidas (demais status): " & lMantidas & vbNewLine & _
+               "- Linhas em branco disponíveis: " & (lLinhasFinais - lMantidas) & vbNewLine & _
+               "- Classificação: crescente por 'D. abertura'." & vbNewLine & _
+               "- Todas as formatações e validações foram preservadas.", _
                vbInformation, MSG_TITULO
     End If
 
 SairRotina:
-    ' Restauração estrita dos estados da aplicação
     On Error Resume Next
     Application.Calculation = appCalc
     Application.EnableEvents = True
@@ -235,6 +361,167 @@ TratarErro:
            "Descrição: " & Err.Description, vbCritical, MSG_TITULO
     Resume SairRotina
 End Sub
+
+'-------------------------------------------------------------------------------------------------------------------
+' SUBROTINA AUXILIAR: Remove ListObjects secundários/órfãos (ex.: Tabela16 acidental abaixo dos dados) na aba
+'                     Monitoramento que impediriam o tbl.Resize com Erro 1004
+'-------------------------------------------------------------------------------------------------------------------
+Private Sub RemoverTabelasSecundariasAbaixo(ByVal wsMonit As Worksheet, ByVal tblPrincipal As ListObject, _
+                                            ByVal lLinhaHeaderPrincipal As Long)
+    Dim i As Long
+    Dim loExtra As ListObject
+    Dim rngExtra As Range
+    Dim bAbaixo As Boolean
+
+    If wsMonit.ListObjects.Count <= 1 Then Exit Sub
+
+    For i = wsMonit.ListObjects.Count To 1 Step -1
+        Set loExtra = wsMonit.ListObjects(i)
+        If Not (loExtra Is tblPrincipal) Then
+            If StrComp(loExtra.Name, tblPrincipal.Name, vbTextCompare) <> 0 Then
+                Set rngExtra = loExtra.Range
+                bAbaixo = (rngExtra.Row > lLinhaHeaderPrincipal)
+                On Error Resume Next
+                loExtra.Unlist
+                If bAbaixo And Not rngExtra Is Nothing Then
+                    rngExtra.Clear
+                End If
+                On Error GoTo 0
+            End If
+        End If
+    Next i
+End Sub
+
+'-------------------------------------------------------------------------------------------------------------------
+' FUNÇÃO AUXILIAR: Verifica se uma linha da matriz está 100% em branco
+'-------------------------------------------------------------------------------------------------------------------
+Private Function LinhaTotalmenteVazia(ByRef vDados As Variant, ByVal r As Long, ByVal lTotalCols As Long) As Boolean
+    Dim c As Long
+    For c = 1 To lTotalCols
+        If Not IsEmpty(vDados(r, c)) Then
+            If Not IsError(vDados(r, c)) Then
+                If Len(Trim$(CStr(vDados(r, c)))) > 0 Then
+                    LinhaTotalmenteVazia = False
+                    Exit Function
+                End If
+            Else
+                LinhaTotalmenteVazia = False
+                Exit Function
+            End If
+        End If
+    Next c
+    LinhaTotalmenteVazia = True
+End Function
+
+'-------------------------------------------------------------------------------------------------------------------
+' SUBROTINA AUXILIAR: Ordenação estável (Insertion Sort) dos índices mantidos por 'D. abertura' crescente
+'-------------------------------------------------------------------------------------------------------------------
+Private Sub OrdenarIndicesPorDataAbertura(ByRef vDados As Variant, ByRef idx() As Long, _
+                                          ByVal n As Long, ByVal colData As Long)
+    Dim grupos() As Long
+    Dim valoresNum() As Double
+    Dim valoresTxt() As String
+    Dim i As Long
+    Dim j As Long
+    Dim idxChave As Long
+    Dim grpChave As Long
+    Dim numChave As Double
+    Dim txtChave As String
+
+    ReDim grupos(1 To n)
+    ReDim valoresNum(1 To n)
+    ReDim valoresTxt(1 To n)
+
+    For i = 1 To n
+        ExtrairChaveOrdenacaoData vDados(idx(i), colData), grupos(i), valoresNum(i), valoresTxt(i)
+    Next i
+
+    For i = 2 To n
+        idxChave = idx(i)
+        grpChave = grupos(i)
+        numChave = valoresNum(i)
+        txtChave = valoresTxt(i)
+        j = i - 1
+
+        Do While j >= 1
+            If CompararChavesData(grupos(j), valoresNum(j), valoresTxt(j), grpChave, numChave, txtChave) > 0 Then
+                idx(j + 1) = idx(j)
+                grupos(j + 1) = grupos(j)
+                valoresNum(j + 1) = valoresNum(j)
+                valoresTxt(j + 1) = valoresTxt(j)
+                j = j - 1
+            Else
+                Exit Do
+            End If
+        Loop
+
+        idx(j + 1) = idxChave
+        grupos(j + 1) = grpChave
+        valoresNum(j + 1) = numChave
+        valoresTxt(j + 1) = txtChave
+    Next i
+End Sub
+
+'-------------------------------------------------------------------------------------------------------------------
+' SUBROTINA AUXILIAR: Extrai chave tipada para ordenação cronológica (0=Data válida, 1=Texto, 2=Vazio)
+'-------------------------------------------------------------------------------------------------------------------
+Private Sub ExtrairChaveOrdenacaoData(ByVal vValor As Variant, ByRef lGrupo As Long, _
+                                      ByRef dNum As Double, ByRef sTxt As String)
+    Dim sLimpo As String
+    dNum = 0#
+    sTxt = ""
+
+    If IsEmpty(vValor) Or IsError(vValor) Then
+        lGrupo = 2
+        Exit Sub
+    End If
+
+    If VarType(vValor) = vbDate Or VarType(vValor) = vbDouble Or _
+       VarType(vValor) = vbSingle Or VarType(vValor) = vbLong Or _
+       VarType(vValor) = vbInteger Or VarType(vValor) = vbCurrency Or VarType(vValor) = vbDecimal Then
+        lGrupo = 0
+        dNum = CDbl(vValor)
+        Exit Sub
+    End If
+
+    sLimpo = Trim$(CStr(vValor))
+    If Len(sLimpo) = 0 Then
+        lGrupo = 2
+    ElseIf IsNumeric(sLimpo) Then
+        lGrupo = 0
+        dNum = CDbl(sLimpo)
+    ElseIf IsDate(sLimpo) Then
+        lGrupo = 0
+        dNum = CDbl(CDate(sLimpo))
+    Else
+        lGrupo = 1
+        sTxt = UCase$(sLimpo)
+    End If
+End Sub
+
+'-------------------------------------------------------------------------------------------------------------------
+' FUNÇÃO AUXILIAR: Compara duas chaves extraídas (-1 se A < B, 0 se A = B, 1 se A > B)
+'-------------------------------------------------------------------------------------------------------------------
+Private Function CompararChavesData(ByVal grpA As Long, ByVal numA As Double, ByVal txtA As String, _
+                                    ByVal grpB As Long, ByVal numB As Double, ByVal txtB As String) As Long
+    If grpA < grpB Then
+        CompararChavesData = -1
+    ElseIf grpA > grpB Then
+        CompararChavesData = 1
+    ElseIf grpA = 0 Then
+        If numA < numB Then
+            CompararChavesData = -1
+        ElseIf numA > numB Then
+            CompararChavesData = 1
+        Else
+            CompararChavesData = 0
+        End If
+    ElseIf grpA = 1 Then
+        CompararChavesData = StrComp(txtA, txtB, vbTextCompare)
+    Else
+        CompararChavesData = 0
+    End If
+End Function
 
 '-------------------------------------------------------------------------------------------------------------------
 ' FUNÇÃO AUXILIAR: Localiza a aba 'Monitoramento' com segurança
@@ -265,7 +552,7 @@ Private Function ObterTabelaMonitoramento(ByVal ws As Worksheet) As ListObject
 End Function
 
 '-------------------------------------------------------------------------------------------------------------------
-' FUNÇÃO AUXILIAR: Localiza o índice de uma coluna pelo nome ou parte do nome (com índice de fallback)
+' FUNÇÃO AUXILIAR: Localiza o índice de uma coluna pelo nome (exato primeiro, depois parcial, com fallback)
 '-------------------------------------------------------------------------------------------------------------------
 Private Function ObterIndiceColuna(ByVal tbl As ListObject, ByVal sTrechoNome As String, ByVal lIndiceFallback As Long) As Long
     Dim c As Long
@@ -274,21 +561,184 @@ Private Function ObterIndiceColuna(ByVal tbl As ListObject, ByVal sTrechoNome As
 
     sTrechoLimpo = UCase$(Trim$(sTrechoNome))
 
+    ' 1ª passagem: correspondência exata
     For c = 1 To tbl.ListColumns.Count
-        sNomeLimpo = Replace(Replace(UCase$(tbl.ListColumns(c).Name), vbLf, ""), vbCr, "")
-        sNomeLimpo = Trim$(sNomeLimpo)
+        sNomeLimpo = Trim$(Replace(Replace(UCase$(tbl.ListColumns(c).Name), vbLf, " "), vbCr, " "))
+        If sNomeLimpo = sTrechoLimpo Then
+            ObterIndiceColuna = c
+            Exit Function
+        End If
+    Next c
+
+    ' 2ª passagem: correspondência parcial
+    For c = 1 To tbl.ListColumns.Count
+        sNomeLimpo = Trim$(Replace(Replace(UCase$(tbl.ListColumns(c).Name), vbLf, " "), vbCr, " "))
         If InStr(1, sNomeLimpo, sTrechoLimpo, vbTextCompare) > 0 Then
             ObterIndiceColuna = c
             Exit Function
         End If
     Next c
 
-    If lIndiceFallback > 0 And lIndiceFallback <= tbl.ListColumns.Count Then
+    If lIndiceFallback >= 0 And lIndiceFallback <= tbl.ListColumns.Count Then
         ObterIndiceColuna = lIndiceFallback
     Else
-        ObterIndiceColuna = 1
+        ObterIndiceColuna = 0
     End If
 End Function
+
+'-------------------------------------------------------------------------------------------------------------------
+' SUBROTINA AUXILIAR: Captura formato de número/data, alinhamento, quebra de linha e fonte de cada coluna
+'-------------------------------------------------------------------------------------------------------------------
+Private Sub CapturarFormatosColunas(ByVal tbl As ListObject, ByRef vFormatos() As InfoFormatoColuna)
+    Dim c As Long
+    Dim cellRef As Range
+
+    For c = 1 To tbl.ListColumns.Count
+        vFormatos(c).FormatoLocal = "Geral"
+        vFormatos(c).AlinhamentoH = xlGeneral
+        vFormatos(c).AlinhamentoV = xlCenter
+        vFormatos(c).QuebrarTexto = (c = 26)
+        vFormatos(c).NomeFonte = "Calibri"
+        vFormatos(c).TamanhoFonte = IIf(c = 26, 9#, 11#)
+        vFormatos(c).Negrito = False
+
+        If Not tbl.DataBodyRange Is Nothing Then
+            Set cellRef = tbl.DataBodyRange.Cells(1, c)
+            On Error Resume Next
+            vFormatos(c).FormatoLocal = CStr(cellRef.NumberFormatLocal)
+            vFormatos(c).AlinhamentoH = CLng(cellRef.HorizontalAlignment)
+            vFormatos(c).AlinhamentoV = CLng(cellRef.VerticalAlignment)
+            vFormatos(c).QuebrarTexto = CBool(cellRef.WrapText)
+            If Len(CStr(cellRef.Font.Name)) > 0 Then vFormatos(c).NomeFonte = CStr(cellRef.Font.Name)
+            If CDbl(cellRef.Font.Size) > 0 Then vFormatos(c).TamanhoFonte = CDbl(cellRef.Font.Size)
+            vFormatos(c).Negrito = CBool(cellRef.Font.Bold)
+            On Error GoTo 0
+        End If
+    Next c
+End Sub
+
+'-------------------------------------------------------------------------------------------------------------------
+' SUBROTINA AUXILIAR: Aplica formatos capturados uniformemente em todas as linhas da tabela (>= 700 linhas)
+'-------------------------------------------------------------------------------------------------------------------
+Private Sub AplicarFormatosColunas(ByVal tbl As ListObject, ByRef vFormatos() As InfoFormatoColuna, ByVal dAltura As Double)
+    Dim c As Long
+    Dim rngCol As Range
+
+    If tbl.DataBodyRange Is Nothing Then Exit Sub
+
+    On Error Resume Next
+    With tbl.DataBodyRange
+        .Interior.ColorIndex = xlColorIndexNone
+        .Font.ColorIndex = xlColorIndexAutomatic
+        .RowHeight = dAltura
+    End With
+
+    For c = 1 To tbl.ListColumns.Count
+        Set rngCol = tbl.ListColumns(c).DataBodyRange
+        If Not rngCol Is Nothing Then
+            If Len(vFormatos(c).FormatoLocal) > 0 Then
+                rngCol.NumberFormatLocal = vFormatos(c).FormatoLocal
+            End If
+            rngCol.HorizontalAlignment = vFormatos(c).AlinhamentoH
+            rngCol.VerticalAlignment = vFormatos(c).AlinhamentoV
+            rngCol.WrapText = vFormatos(c).QuebrarTexto
+            rngCol.Font.Name = vFormatos(c).NomeFonte
+            rngCol.Font.Size = vFormatos(c).TamanhoFonte
+            rngCol.Font.Bold = vFormatos(c).Negrito
+        End If
+    Next c
+    On Error GoTo 0
+End Sub
+
+'-------------------------------------------------------------------------------------------------------------------
+' SUBROTINA AUXILIAR: Captura regras de destaque de valores duplicados existentes na tabela
+'-------------------------------------------------------------------------------------------------------------------
+Private Sub CapturarCondicionaisDuplicados(ByVal wsMonit As Worksheet, ByVal tbl As ListObject, _
+                                           ByRef vCond() As InfoCondicionalDuplicados)
+    Dim i As Long
+    Dim c As Long
+    Dim fc As Object
+    Dim rngInter As Range
+
+    For c = 1 To tbl.ListColumns.Count
+        vCond(c).Ativo = False
+        vCond(c).CorFundo = 13551615 ' RGB(255, 199, 206) padrão Excel
+        vCond(c).CorFonte = 393372   ' RGB(156, 0, 6) padrão Excel
+    Next c
+
+    If tbl.DataBodyRange Is Nothing Then Exit Sub
+
+    On Error Resume Next
+    For i = 1 To wsMonit.Cells.FormatConditions.Count
+        Set fc = wsMonit.Cells.FormatConditions.Item(i)
+        If Not fc Is Nothing Then
+            If fc.Type = xlUniqueValues Then
+                If fc.DupeUnique = xlDuplicate Then
+                    For c = 1 To tbl.ListColumns.Count
+                        Set rngInter = Nothing
+                        Set rngInter = Application.Intersect(fc.AppliesTo, tbl.ListColumns(c).DataBodyRange)
+                        If Not rngInter Is Nothing Then
+                            vCond(c).Ativo = True
+                            If CLng(fc.Interior.Color) > 0 Then vCond(c).CorFundo = CLng(fc.Interior.Color)
+                            If CLng(fc.Font.Color) >= 0 Then vCond(c).CorFonte = CLng(fc.Font.Color)
+                        End If
+                    Next c
+                End If
+            End If
+        End If
+    Next i
+    On Error GoTo 0
+End Sub
+
+'-------------------------------------------------------------------------------------------------------------------
+' SUBROTINA AUXILIAR: Desfragmenta e reaplica regras de duplicidade em todo o DataBodyRange de cada coluna
+'-------------------------------------------------------------------------------------------------------------------
+Private Sub ReaplicarCondicionaisDuplicados(ByVal wsMonit As Worksheet, ByVal tbl As ListObject, _
+                                            ByRef vCond() As InfoCondicionalDuplicados)
+    Dim i As Long
+    Dim c As Long
+    Dim bAlgumaAtiva As Boolean
+    Dim fcObj As Object
+    Dim uvRule As UniqueValues
+    Dim rngCol As Range
+
+    If tbl.DataBodyRange Is Nothing Then Exit Sub
+
+    bAlgumaAtiva = False
+    For c = 1 To tbl.ListColumns.Count
+        If vCond(c).Ativo Then
+            bAlgumaAtiva = True
+            Exit For
+        End If
+    Next c
+    If Not bAlgumaAtiva Then Exit Sub
+
+    On Error Resume Next
+    ' Remove fragmentos antigos de xlUniqueValues na aba para evitar regras órfãs até a linha 1048576
+    For i = wsMonit.Cells.FormatConditions.Count To 1 Step -1
+        Set fcObj = wsMonit.Cells.FormatConditions.Item(i)
+        If Not fcObj Is Nothing Then
+            If fcObj.Type = xlUniqueValues Then
+                fcObj.Delete
+            End If
+        End If
+    Next i
+
+    ' Recria 1 regra limpa por coluna cobrindo exatamente todas as linhas atuais da tabela (>= 700)
+    For c = 1 To tbl.ListColumns.Count
+        If vCond(c).Ativo Then
+            Set rngCol = tbl.ListColumns(c).DataBodyRange
+            If Not rngCol Is Nothing Then
+                Set uvRule = rngCol.FormatConditions.AddUniqueValues
+                uvRule.DupeUnique = xlDuplicate
+                uvRule.Interior.Color = vCond(c).CorFundo
+                uvRule.Font.Color = vCond(c).CorFonte
+                uvRule.StopIfTrue = False
+            End If
+        End If
+    Next c
+    On Error GoTo 0
+End Sub
 
 '-------------------------------------------------------------------------------------------------------------------
 ' SUBROTINA AUXILIAR: Mapeia as regras de validação presentes em cada coluna
@@ -300,6 +750,7 @@ Private Sub CapturarValidacoesTabela(ByVal tbl As ListObject, ByRef vValidacoes(
     Dim cellTest As Range
     Dim vObj As Validation
     Dim lMaxLinhasTeste As Long
+    Dim lTipo As Long
 
     For c = 1 To tbl.ListColumns.Count
         vValidacoes(c).TemValidacao = False
@@ -309,29 +760,30 @@ Private Sub CapturarValidacoesTabela(ByVal tbl As ListObject, ByRef vValidacoes(
             lMaxLinhasTeste = Application.WorksheetFunction.Min(rngCol.Rows.Count, 5)
             For r = 1 To lMaxLinhasTeste
                 Set cellTest = rngCol.Cells(r, 1)
+                lTipo = 0
                 On Error Resume Next
                 Set vObj = cellTest.Validation
-                If Not vObj Is Nothing Then
-                    If vObj.Type <> 0 Then
-                        vValidacoes(c).TemValidacao = True
-                        vValidacoes(c).Tipo = vObj.Type
-                        vValidacoes(c).EstiloAlerta = vObj.AlertStyle
-                        vValidacoes(c).Operador = vObj.Operator
-                        vValidacoes(c).Formula1 = vObj.Formula1
-                        vValidacoes(c).Formula2 = ""
-                        vValidacoes(c).Formula2 = vObj.Formula2
-                        vValidacoes(c).IgnorarBranco = vObj.IgnoreBlank
-                        vValidacoes(c).ListaSuspensa = vObj.InCellDropdown
-                        vValidacoes(c).ExibirEntrada = vObj.ShowInput
-                        vValidacoes(c).ExibirErro = vObj.ShowError
-                        vValidacoes(c).TituloEntrada = vObj.InputTitle
-                        vValidacoes(c).MsgEntrada = vObj.InputMessage
-                        vValidacoes(c).TituloErro = vObj.ErrorTitle
-                        vValidacoes(c).MsgErro = vObj.ErrorMessage
-                        On Error GoTo 0
-                        Exit For
-                    End If
+                If Not vObj Is Nothing Then lTipo = vObj.Type
+                If Err.Number = 0 And lTipo <> 0 Then
+                    vValidacoes(c).TemValidacao = True
+                    vValidacoes(c).Tipo = lTipo
+                    vValidacoes(c).EstiloAlerta = vObj.AlertStyle
+                    vValidacoes(c).Operador = vObj.Operator
+                    vValidacoes(c).Formula1 = vObj.Formula1
+                    vValidacoes(c).Formula2 = ""
+                    vValidacoes(c).Formula2 = vObj.Formula2
+                    vValidacoes(c).IgnorarBranco = vObj.IgnoreBlank
+                    vValidacoes(c).ListaSuspensa = vObj.InCellDropdown
+                    vValidacoes(c).ExibirEntrada = vObj.ShowInput
+                    vValidacoes(c).ExibirErro = vObj.ShowError
+                    vValidacoes(c).TituloEntrada = vObj.InputTitle
+                    vValidacoes(c).MsgEntrada = vObj.InputMessage
+                    vValidacoes(c).TituloErro = vObj.ErrorTitle
+                    vValidacoes(c).MsgErro = vObj.ErrorMessage
+                    On Error GoTo 0
+                    Exit For
                 End If
+                Err.Clear
                 On Error GoTo 0
             Next r
         End If
@@ -417,40 +869,9 @@ Private Function ObterFormulaFallbackPorIndice(ByVal c As Long) As String
             ObterFormulaFallbackPorIndice = "=TabelaA!$AQ$2:$AQ$53"
         Case 8  ' Coluna H: Aplicação
             ObterFormulaFallbackPorIndice = "=TabelaA!$AH$2:$AH$3"
-        Case 25 ' Coluna Y: OS disponibilizada? / Faturamento Direto
+        Case 25 ' Coluna Y: OS disponibilizada?
             ObterFormulaFallbackPorIndice = "=TabelaA!$AW$2:$AW$3"
         Case Else
             ObterFormulaFallbackPorIndice = ""
     End Select
 End Function
-
-'-------------------------------------------------------------------------------------------------------------------
-' SUBROTINA AUXILIAR: Formata colunas de data/hora e alinhamentos básicos
-'-------------------------------------------------------------------------------------------------------------------
-Private Sub FormatarColunasPadrao(ByVal tbl As ListObject)
-    On Error Resume Next
-    If tbl.ListRows.Count = 0 Or tbl.DataBodyRange Is Nothing Then Exit Sub
-
-    ' Coluna B: Período faturamento
-    If tbl.ListColumns.Count >= 2 Then
-        tbl.ListColumns(2).DataBodyRange.NumberFormat = "dd/mm/aaaa (ddd)"
-        tbl.ListColumns(2).DataBodyRange.HorizontalAlignment = xlCenter
-    End If
-
-    ' Colunas de Códigos e Siglas Curtas (Centralizadas)
-    If tbl.ListColumns.Count >= 3 Then tbl.ListColumns(3).DataBodyRange.HorizontalAlignment = xlCenter ' Situação
-    If tbl.ListColumns.Count >= 4 Then tbl.ListColumns(4).DataBodyRange.HorizontalAlignment = xlCenter ' Contrato
-    If tbl.ListColumns.Count >= 5 Then tbl.ListColumns(5).DataBodyRange.HorizontalAlignment = xlCenter ' UF
-    If tbl.ListColumns.Count >= 8 Then tbl.ListColumns(8).DataBodyRange.HorizontalAlignment = xlCenter ' Aplicação
-    If tbl.ListColumns.Count >= 25 Then tbl.ListColumns(25).DataBodyRange.HorizontalAlignment = xlCenter ' OS disponibilizada
-
-    ' Colunas de Data/Hora (dd/mm/aaaa hh:mm)
-    If tbl.ListColumns.Count >= 12 Then tbl.ListColumns(12).DataBodyRange.NumberFormat = "dd/mm/aaaa hh:mm" ' D. solicitação
-    If tbl.ListColumns.Count >= 17 Then tbl.ListColumns(17).DataBodyRange.NumberFormat = "dd/mm/aaaa hh:mm" ' D. abertura
-    If tbl.ListColumns.Count >= 18 Then tbl.ListColumns(18).DataBodyRange.NumberFormat = "dd/mm/aaaa hh:mm" ' D. fechamento
-
-    ' Colunas de Quantidades (Alinhadas ao centro)
-    If tbl.ListColumns.Count >= 15 Then tbl.ListColumns(15).DataBodyRange.HorizontalAlignment = xlCenter ' Qtd. Solicitada
-    If tbl.ListColumns.Count >= 20 Then tbl.ListColumns(20).DataBodyRange.HorizontalAlignment = xlCenter ' Qtd. Atendida
-    On Error GoTo 0
-End Sub
