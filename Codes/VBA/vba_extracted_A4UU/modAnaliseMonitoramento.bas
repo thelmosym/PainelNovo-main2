@@ -36,6 +36,7 @@ Private Const COLUNA_LOG_NUM As Long = 26 ' Coluna Z
 Private Const COR_FUNDO_ERRO As Long = 14803454    ' RGB(254, 226, 226) - Vermelho Claro Suave
 Private Const COR_TEXTO_ERRO As Long = 1776411     ' RGB(153, 27, 27)  - Vermelho Escuro
 Private Const COR_FUNDO_OK   As Long = 15138766    ' RGB(238, 242, 238) - Neutro / Limpo
+Private Const COR_LINHA_AMARELO As Long = 10092543 ' RGB(255, 255, 153) - Amarelo destaque de linha com LOG
 
 '-------------------------------------------------------------------------------------------------------------------
 ' PONTO DE ENTRADA PÚBLICO
@@ -239,17 +240,94 @@ Private Sub ExecutarAnaliseMonitoramento(ByVal bSilencioso As Boolean)
         End If
     Next r
     
-    '=== 6. GRAVAÇÃO ATÔMICA DA COLUNA Z NA ABA MONITORAMENTO ===
-    Application.StatusBar = "Gravando logs na Coluna Z..."
+    '=== 6. GRAVAÇÃO ATÔMICA DA COLUNA Z, DESTAQUE AMARELO E AUTOAJUSTE DE ALTURA ===
+    Application.StatusBar = "Gravando logs e ajustando formatação das linhas..."
+    
+    Dim ultimaColTabela As Long
+    Dim alturaPadrao As Double
+    Dim rngDadosTabela As Range
+    Dim rngBlocoAmarelo As Range
+    Dim rngBlocoAutoFit As Range
+    Dim rngLinhaAtual As Range
+    Dim qtdBloco As Long
+    
+    ultimaColTabela = COLUNA_LOG_NUM
+    On Error Resume Next
+    If wsMonit.ListObjects.Count > 0 Then
+        ultimaColTabela = wsMonit.ListObjects(1).Range.Column + wsMonit.ListObjects(1).Range.Columns.Count - 1
+    End If
+    alturaPadrao = wsMonit.StandardHeight
+    On Error GoTo TratarErro
+    If ultimaColTabela < COLUNA_LOG_NUM Then ultimaColTabela = COLUNA_LOG_NUM
+    If alturaPadrao <= 0 Then alturaPadrao = 15
+    
+    ' Garante largura mínima legível na Coluna Z para quebra proporcional de múltiplas críticas
+    If wsMonit.Columns(COLUNA_LOG_NUM).ColumnWidth < 55 Then
+        wsMonit.Columns(COLUNA_LOG_NUM).ColumnWidth = 65
+    End If
+    
+    ' Limpa destaques amarelos anteriores e restaura altura padrão das linhas sem erro
+    Set rngDadosTabela = wsMonit.Range(wsMonit.Cells(LINHA_INICIAL_DADOS, 1), wsMonit.Cells(ul, ultimaColTabela))
+    rngDadosTabela.Interior.ColorIndex = xlColorIndexNone
+    rngDadosTabela.Rows.RowHeight = alturaPadrao
+    
+    ' Despeja os logs em memória de uma só vez na Coluna Z
     wsMonit.Range(wsMonit.Cells(LINHA_INICIAL_DADOS, COLUNA_LOG_NUM), wsMonit.Cells(ul, COLUNA_LOG_NUM)).Value = vLog
     
-    ' Formatação visual da coluna de log: texto em vermelho para os logs gerados
+    ' Formatação visual da coluna de log: quebra automática de texto e fonte vermelha
     With wsMonit.Range(wsMonit.Cells(LINHA_INICIAL_DADOS, COLUNA_LOG_NUM), wsMonit.Cells(ul, COLUNA_LOG_NUM))
         .Font.Name = "Calibri"
         .Font.Size = 9
-        .Font.Color = vbRed   ' Cor do texto do log gerado em vermelho
+        .Font.Color = vbRed
         .WrapText = True
+        .VerticalAlignment = xlVAlignCenter
     End With
+    
+    ' Aplica cor amarela e autoajuste de altura (AutoFit) em lotes nas linhas que geraram log
+    If iLinhasComErro > 0 Then
+        qtdBloco = 0
+        Set rngBlocoAmarelo = Nothing
+        Set rngBlocoAutoFit = Nothing
+        
+        For r = 1 To iTotalLinhas
+            If Len(CStr(vLog(r, 1))) > 0 Then
+                iLinha = r + LINHA_INICIAL_DADOS - 1
+                Set rngLinhaAtual = wsMonit.Range(wsMonit.Cells(iLinha, 1), wsMonit.Cells(iLinha, ultimaColTabela))
+                
+                If rngBlocoAmarelo Is Nothing Then
+                    Set rngBlocoAmarelo = rngLinhaAtual
+                    Set rngBlocoAutoFit = wsMonit.Rows(iLinha)
+                Else
+                    Set rngBlocoAmarelo = Application.Union(rngBlocoAmarelo, rngLinhaAtual)
+                    Set rngBlocoAutoFit = Application.Union(rngBlocoAutoFit, wsMonit.Rows(iLinha))
+                End If
+                
+                qtdBloco = qtdBloco + 1
+                If qtdBloco >= 40 Then
+                    rngBlocoAmarelo.Interior.Color = COR_LINHA_AMARELO
+                    rngBlocoAutoFit.Rows.AutoFit
+                    Set rngBlocoAmarelo = Nothing
+                    Set rngBlocoAutoFit = Nothing
+                    qtdBloco = 0
+                End If
+            End If
+        Next r
+        
+        If Not rngBlocoAmarelo Is Nothing Then
+            rngBlocoAmarelo.Interior.Color = COR_LINHA_AMARELO
+            rngBlocoAutoFit.Rows.AutoFit
+        End If
+        
+        ' Garante piso mínimo da altura padrão mesmo em logs curtos de uma única linha
+        For r = 1 To iTotalLinhas
+            If Len(CStr(vLog(r, 1))) > 0 Then
+                iLinha = r + LINHA_INICIAL_DADOS - 1
+                If wsMonit.Rows(iLinha).RowHeight < alturaPadrao Then
+                    wsMonit.Rows(iLinha).RowHeight = alturaPadrao
+                End If
+            End If
+        Next r
+    End If
     
     tFim = Timer
     

@@ -2,7 +2,7 @@
 
 > **Arquivo VBA:** `Codes/VBA/modAnaliseMonitoramento.bas`  
 > **Nome do Módulo:** `modAnaliseMonitoramento`  
-> **Aplicações Alvo:** Pastas de trabalho de Monitoramento Individual (`Monitoramento individual_A4UU_v6.xlsm`, `DPBR`, `GPZ1`, `GQ6S`, `S2IJ`)  
+> **Aplicações Alvo:** Pastas de trabalho de Monitoramento Individual (`Monitoramento individual_A4UU_V.10.xlsm`, `DPBR`, `GPZ1`, `GQ6S`, `S2IJ`)  
 > **Autor da Arquitetura Otimizada:** Equipe de Engenharia / Antigravity  
 > **Padrão de Codificação:** Windows-1252 (CP1252 / ANSI) com quebras de linha CRLF (`\r\n`)
 
@@ -42,9 +42,9 @@ O módulo foi projetado sob rigorosos padrões de engenharia de software para Ex
 ### Destaques Técnicos:
 * **Execução 100% em Memória RAM ($O(1)$):** Os dados da aba `Monitoramento` (Colunas A a Z) são lidos em uma única operação para a matriz `vDados`. Todas as tabelas de referência (`TabelaA` e `TabelaB`) são indexadas em objetos `Scripting.Dictionary`, permitindo que checagens de domínios, siglas e cruzamentos relacionais ocorram com custo computacional $O(1)$.
 * **Gravação Atômica em Bloco:** A matriz de diagnóstico `vLog` é preenchida inteiramente em memória e gravada de uma única vez no intervalo da Coluna Z (`Range(Z3:Z{ul}).Value2 = vLog`).
-* **Estilização Visual Automatizada:** A coluna de log recebe coloração automática conforme o diagnóstico:
-  * **Com Erro:** Fundo vermelho suave (`RGB(254, 226, 226)`) e texto vermelho escuro (`RGB(153, 27, 27)`);
-  * **Conforme / Sem Erro:** Fundo limpo neutro (`RGB(238, 242, 238)`) e texto escuro padrão.
+* **Estilização Visual e Autoajuste Automatizados:**
+  * **Com Erro (LOG gerado):** Quebra automática de linha (`WrapText = True`) e fonte vermelha na Coluna Z (`LOG`), destaque em **amarelo** (`RGB(255, 255, 153)`) em toda a extensão da linha da tabela (`A..AK`) e autoajuste automático da altura da linha (`Rows.AutoFit`) ao tamanho do texto gerado;
+  * **Conforme / Sem Erro:** Restauração automática do fundo transparente (`xlColorIndexNone`, preservando o estilo listrado da tabela) e da altura padrão da linha.
 * **Supressão e Restauração de Ambiente:** Durante a auditoria, os recursos `ScreenUpdating`, `DisplayAlerts` e `EnableEvents` são desligados e o cálculo é colocado em modo manual (`xlCalculationManual`), com restauração garantida em bloco `Finally / SairRotina`.
 * **Velocidade de Processamento:** O tempo médio de auditoria completa fica entre **40 ms e 135 ms** para centenas de linhas de ordens de serviço.
 

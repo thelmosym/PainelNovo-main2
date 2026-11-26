@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     limpar_planilha_monitoramento.ps1
     Automação nativa em PowerShell / Excel COM para limpar e organizar a aba 'Monitoramento',
