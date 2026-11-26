@@ -1,13 +1,13 @@
-<#
+﻿<#
 .SYNOPSIS
     limpar_planilha_monitoramento.ps1
     Automação nativa em PowerShell / Excel COM para limpar e organizar a aba 'Monitoramento',
-    removendo todas as linhas cuja Situação seja 'AT' ou 'CO', mantendo as demais linhas preenchidas,
-    classificando-as em ordem crescente pela coluna 'D. abertura', preservando todas as formatações
-    e validações de dados e mantendo o mínimo de 700 linhas na tabela estruturada.
+    removendo todas as linhas cuja Situação seja 'AT', 'CO' ou 'CA', mantendo todas as demais linhas com
+    conteúdo juntas no início da tabela classificadas em ordem crescente por 'D. abertura', preservando
+    todas as formatações e validações de dados e mantendo o mínimo de 700 linhas na tabela estruturada.
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File scripts/limpar_planilha_monitoramento.ps1 -Caminho "Monitoramento/Monitoramento individual_A4UU_v7.xlsm"
+    powershell -ExecutionPolicy Bypass -File scripts/limpar_planilha_monitoramento.ps1 -Caminho "Monitoramento/Monitoramento individual_A4UU_V.10.xlsm"
 #>
 
 param (

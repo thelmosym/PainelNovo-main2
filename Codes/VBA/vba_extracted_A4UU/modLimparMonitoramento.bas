@@ -2,20 +2,22 @@ Attribute VB_Name = "modLimparMonitoramento"
 '===================================================================================================================
 ' MÓDULO: modLimparMonitoramento
 ' OBJETIVO: Limpeza e organização da aba "Monitoramento", removendo todas as linhas da tabela estruturada
-'           (ListObject) cuja coluna 'Situação' esteja preenchida como 'AT' ou 'CO', mantendo as demais linhas
-'           preenchidas, classificando-as de forma crescente pela coluna 'D. abertura', preservando todas as
-'           formatações e validações da tabela e garantindo um mínimo de 700 linhas de dados.
+'           (ListObject) cuja coluna 'Situação' esteja preenchida como 'AT', 'CO' ou 'CA', mantendo todas as
+'           demais linhas com conteúdo agrupadas de forma contínua no início da tabela, classificadas de forma
+'           crescente pela coluna 'D. abertura' (com desempate por 'D. solicitação' quando 'D. abertura' estiver
+'           em branco), preservando todas as formatações/validações e garantindo no mínimo 700 linhas na tabela.
 ' APLICAÇÃO: Planilha de Monitoramento Individual (A4UU, DPBR, GPZ1, GQ6S, S2IJ, etc.)
 '
 ' REGRAS IMPLEMENTADAS:
-'   1. IDENTIFICAÇÃO DINÂMICA: Localiza 'Situação' e 'D. abertura' pelo cabeçalho (com fallback de índice).
-'   2. FILTRAGEM SELETIVA: Remove todas as linhas com Situação = "AT" ou "CO", mantendo as demais preenchidas.
-'   3. CLASSIFICAÇÃO CRONOLÓGICA: Ordena as linhas mantidas de forma crescente pela coluna 'D. abertura'.
+'   1. IDENTIFICAÇÃO DINÂMICA: Localiza 'Situação', 'D. abertura' e 'D. solicitação' pelo cabeçalho.
+'   2. FILTRAGEM SELETIVA: Remove todas as linhas com Situação = "AT", "CO" ou "CA" e descarta linhas vazias
+'      intermediárias (incluindo células contendo apenas espaços ou caracteres invisíveis como Chr(160)).
+'   3. AGRUPAMENTO CONTÍNUO NO INÍCIO + CLASSIFICAÇÃO: Todas as linhas com conteúdo ficam juntas no topo da
+'      tabela (a partir da linha 3, sem linhas vazias intercaladas), ordenadas por 'D. abertura' crescente.
 '   4. MÍNIMO DE 700 LINHAS: Mantém ao menos 700 linhas na tabela (ou todas as mantidas, se > 700).
 '   5. PRESERVAÇÃO INTEGRAL: Mantém estilo da tabela, formatos de número/data, alinhamentos, fontes,
 '      regras de formatação condicional e validações de dados (listas suspensas) em todas as linhas.
-'   6. SEGURANÇA DE FÓRMULAS EXTERNAS: Limpa resíduos abaixo da tabela via .Clear (sem excluir linhas físicas),
-'      preservando intervalos de fórmulas em outras abas (ex.: 'Contagem NC').
+'   6. BLINDAGEM CONTRA ERRO 1004: Remove tabelas secundárias órfãs abaixo do cabeçalho e células mescladas.
 '
 ' CODIFICAÇÃO: Windows-1252 (CP1252 / ANSI) com quebras de linha CRLF para compatibilidade VBE.
 '===================================================================================================================
@@ -80,7 +82,8 @@ End Sub
 
 '-------------------------------------------------------------------------------------------------------------------
 ' PROCEDIMENTO PRINCIPAL PARAMETRIZADO:
-' Limpa linhas com Situação = 'AT' ou 'CO', mantém as demais ordenadas por 'D. abertura' e garante >= 700 linhas.
+' Limpa linhas com Situação = 'AT', 'CO' ou 'CA', agrupa todas as linhas com conteúdo juntas no início da
+' planilha ordenadas por 'D. abertura' e mantém no mínimo 700 linhas formatadas na tabela.
 '-------------------------------------------------------------------------------------------------------------------
 Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean = False)
     Dim sEtapaAtual As String
@@ -105,6 +108,7 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
 
     Dim colSituacao As Long
     Dim colDataAbertura As Long
+    Dim colDataSolicitacao As Long
 
     Dim vValidacoes() As InfoValidacao
     Dim vFormatos() As InfoFormatoColuna
@@ -133,8 +137,8 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
     If Not bSilencioso Then
         resposta = MsgBox("ATENÇÃO: Este procedimento irá:" & vbNewLine & vbNewLine & _
                           "1. Analisar todas as linhas da tabela 'Monitoramento'." & vbNewLine & _
-                          "2. Limpar todas as linhas com Situação preenchida como 'AT' ou 'CO', mantendo as demais." & vbNewLine & _
-                          "3. Classificar as linhas mantidas pela coluna 'D. abertura' (ordem crescente)." & vbNewLine & _
+                          "2. Remover todas as linhas com Situação 'AT', 'CO' ou 'CA'." & vbNewLine & _
+                          "3. Agrupar todas as linhas com conteúdo juntas no início da tabela, ordenadas por 'D. abertura'." & vbNewLine & _
                           "4. Preservar todas as formatações e validações, mantendo no mínimo " & MIN_LINHAS_TABELA & " linhas na tabela." & vbNewLine & vbNewLine & _
                           "Deseja realmente continuar?", vbQuestion + vbYesNo + vbDefaultButton2, MSG_TITULO)
         If resposta <> vbYes Then Exit Sub
@@ -169,21 +173,26 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
     lLinhaHeader = tbl.HeaderRowRange.Row
     lColInicial = tbl.HeaderRowRange.Column
 
-    ' 5. Desativar quaisquer filtros ativos (evita Erro 1004 em manipulação de tabela)
+    ' 5. Desativar quaisquer filtros ativos (evita Erro 1004 e linhas ocultas)
     sEtapaAtual = "Limpeza de filtros ativos"
     On Error Resume Next
     If wsMonit.FilterMode Then wsMonit.ShowAllData
     If Not tbl.AutoFilter Is Nothing Then
         If tbl.AutoFilter.FilterMode Then tbl.AutoFilter.ShowAllData
     End If
+    wsMonit.Rows.Hidden = False
     On Error GoTo TratarErro
 
-    ' 6. Identificar Colunas 'Situação' e 'D. abertura' dinamicamente
-    sEtapaAtual = "Identificação das colunas Situação e D. abertura"
+    ' 6. Identificar Colunas 'Situação', 'D. abertura' e 'D. solicitação' dinamicamente
+    sEtapaAtual = "Identificação das colunas de controle"
     colSituacao = ObterIndiceColuna(tbl, "Situa", 3)
     colDataAbertura = ObterIndiceColuna(tbl, "D. abertura", 0)
     If colDataAbertura = 0 Then
         colDataAbertura = ObterIndiceColuna(tbl, "abertura", 17)
+    End If
+    colDataSolicitacao = ObterIndiceColuna(tbl, "D. solicita", 0)
+    If colDataSolicitacao = 0 Then
+        colDataSolicitacao = ObterIndiceColuna(tbl, "solicita", 12)
     End If
 
     ' 7. Capturar Estilo da Tabela, Formatos de Coluna, Formatação Condicional e Validações
@@ -212,8 +221,8 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
     ReDim vCondDuplicados(1 To lTotalCols)
     CapturarCondicionaisDuplicados wsMonit, tbl, vCondDuplicados
 
-    ' 8. Filtrar em memória: remover Situação = 'AT' ou 'CO' e manter demais linhas preenchidas
-    sEtapaAtual = "Filtragem em memória das linhas AT e CO"
+    ' 8. Filtrar em memória: remover Situação = 'AT', 'CO' ou 'CA' e compactar apenas linhas com conteúdo real
+    sEtapaAtual = "Filtragem em memória das linhas AT, CO e CA"
     lTotalInicial = tbl.ListRows.Count
     lLinhaFimAnterior = lLinhaHeader + lTotalInicial
     lMantidas = 0
@@ -230,8 +239,8 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
         ReDim idxMantidas(1 To lTotalInicial)
 
         For r = 1 To lTotalInicial
-            sValSituacao = UCase$(Trim$(CStr(vDados(r, colSituacao) & "")))
-            If sValSituacao = "AT" Or sValSituacao = "CO" Then
+            sValSituacao = UCase$(LimparEspacosEspeciais(CStr(vDados(r, colSituacao) & "")))
+            If sValSituacao = "AT" Or sValSituacao = "CO" Or sValSituacao = "CA" Then
                 lRemovidas = lRemovidas + 1
             ElseIf Not LinhaTotalmenteVazia(vDados, r, lTotalCols) Then
                 lMantidas = lMantidas + 1
@@ -240,13 +249,14 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
         Next r
     End If
 
-    ' 9. Classificar linhas mantidas de forma crescente pela coluna 'D. abertura' (estável)
-    sEtapaAtual = "Classificação crescente por D. abertura"
+    ' 9. Classificar exclusivamente o bloco de linhas com conteúdo (1..lMantidas) por 'D. abertura' crescente
+    '    (mantendo todas as linhas com conteúdo juntas no topo, sem misturar com as linhas vazias abaixo)
+    sEtapaAtual = "Classificação das linhas mantidas no topo"
     If lMantidas > 1 And colDataAbertura > 0 Then
-        OrdenarIndicesPorDataAbertura vDados, idxMantidas, lMantidas, colDataAbertura
+        OrdenarIndicesPorDataAbertura vDados, idxMantidas, lMantidas, colDataAbertura, colDataSolicitacao
     End If
 
-    ' 10. Montar matriz final garantindo o mínimo de 700 linhas na tabela
+    ' 10. Montar matriz final: linhas 1..lMantidas contíguas no início + linhas vazias até o mínimo de 700
     sEtapaAtual = "Montagem da matriz de saída (mínimo de 700 linhas)"
     If lMantidas < MIN_LINHAS_TABELA Then
         lLinhasFinais = MIN_LINHAS_TABELA
@@ -260,7 +270,9 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
         For c = 1 To lTotalCols
             vCel = vDados(r, c)
             If VarType(vCel) = vbString Then
-                If Len(vCel) > 1 And Left$(vCel, 1) = "0" And IsNumeric(vCel) Then
+                If Len(LimparEspacosEspeciais(CStr(vCel))) = 0 Then
+                    vSaida(k, c) = Empty
+                ElseIf Len(vCel) > 1 And Left$(vCel, 1) = "0" And IsNumeric(vCel) Then
                     vSaida(k, c) = "'" & vCel
                 Else
                     vSaida(k, c) = vCel
@@ -322,7 +334,7 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
     sEtapaAtual = "Restauração da formatação condicional"
     ReaplicarCondicionaisDuplicados wsMonit, tbl, vCondDuplicados
 
-    ' 14. Registrar ordenação ativa no cabeçalho da tabela (seta visual em 'D. abertura' quando tudo datado)
+    ' 14. Limpar metadados de SortFields para não deslocar linhas vazias em reordenações futuras
     On Error Resume Next
     tbl.Sort.SortFields.Clear
     On Error GoTo TratarErro
@@ -338,9 +350,9 @@ Public Sub LimparAbaMonitoramentoManterNC(Optional ByVal bSilencioso As Boolean 
     If Not bSilencioso Then
         MsgBox "[OK] Limpeza e organização da aba 'Monitoramento' concluída com sucesso!" & vbNewLine & vbNewLine & _
                "- Tabela: '" & sNomeTabela & "' (" & lLinhasFinais & " linhas totais)" & vbNewLine & _
-               "- Linhas removidas (AT e CO): " & lRemovidas & vbNewLine & _
-               "- Linhas mantidas (demais status): " & lMantidas & vbNewLine & _
-               "- Linhas em branco disponíveis: " & (lLinhasFinais - lMantidas) & vbNewLine & _
+               "- Linhas removidas (AT, CO e CA): " & lRemovidas & vbNewLine & _
+               "- Linhas com conteúdo agrupadas no início: " & lMantidas & vbNewLine & _
+               "- Linhas em branco ao final: " & (lLinhasFinais - lMantidas) & vbNewLine & _
                "- Classificação: crescente por 'D. abertura'." & vbNewLine & _
                "- Todas as formatações e validações foram preservadas.", _
                vbInformation, MSG_TITULO
@@ -361,6 +373,21 @@ TratarErro:
            "Descrição: " & Err.Description, vbCritical, MSG_TITULO
     Resume SairRotina
 End Sub
+
+'-------------------------------------------------------------------------------------------------------------------
+' FUNÇÃO AUXILIAR: Remove espaços comuns, espaços não-quebráveis (Chr(160)), tabulações e quebras de linha
+'-------------------------------------------------------------------------------------------------------------------
+Private Function LimparEspacosEspeciais(ByVal sTexto As String) As String
+    If Len(sTexto) = 0 Then
+        LimparEspacosEspeciais = ""
+        Exit Function
+    End If
+    sTexto = Replace(sTexto, Chr$(160), " ")
+    sTexto = Replace(sTexto, vbTab, " ")
+    sTexto = Replace(sTexto, vbCr, "")
+    sTexto = Replace(sTexto, vbLf, "")
+    LimparEspacosEspeciais = Trim$(sTexto)
+End Function
 
 '-------------------------------------------------------------------------------------------------------------------
 ' SUBROTINA AUXILIAR: Remove ListObjects secundários/órfãos (ex.: Tabela16 acidental abaixo dos dados) na aba
@@ -393,18 +420,16 @@ Private Sub RemoverTabelasSecundariasAbaixo(ByVal wsMonit As Worksheet, ByVal tb
 End Sub
 
 '-------------------------------------------------------------------------------------------------------------------
-' FUNÇÃO AUXILIAR: Verifica se uma linha da matriz está 100% em branco
+' FUNÇÃO AUXILIAR: Verifica se uma linha da matriz está 100% vazia (ignorando espaços e Chr(160))
 '-------------------------------------------------------------------------------------------------------------------
 Private Function LinhaTotalmenteVazia(ByRef vDados As Variant, ByVal r As Long, ByVal lTotalCols As Long) As Boolean
     Dim c As Long
     For c = 1 To lTotalCols
         If Not IsEmpty(vDados(r, c)) Then
-            If Not IsError(vDados(r, c)) Then
-                If Len(Trim$(CStr(vDados(r, c)))) > 0 Then
-                    LinhaTotalmenteVazia = False
-                    Exit Function
-                End If
-            Else
+            If IsError(vDados(r, c)) Then
+                LinhaTotalmenteVazia = False
+                Exit Function
+            ElseIf Len(LimparEspacosEspeciais(CStr(vDados(r, c)))) > 0 Then
                 LinhaTotalmenteVazia = False
                 Exit Function
             End If
@@ -414,40 +439,76 @@ Private Function LinhaTotalmenteVazia(ByRef vDados As Variant, ByVal r As Long, 
 End Function
 
 '-------------------------------------------------------------------------------------------------------------------
-' SUBROTINA AUXILIAR: Ordenação estável (Insertion Sort) dos índices mantidos por 'D. abertura' crescente
+' SUBROTINA AUXILIAR: Ordenação estável (Insertion Sort) de idx(1..n) mantendo todas as linhas com conteúdo juntas:
+'   - Grupo 0: Linhas com 'D. abertura' preenchida (ordenadas da mais antiga para a mais recente)
+'   - Grupo 1: Linhas com 'D. abertura' vazia, mas com 'D. solicitação' preenchida (ordenadas por 'D. solicitação')
+'   - Grupo 2: Demais linhas com conteúdo sem data preenchida (mantendo ordem original logo após Grupo 1)
 '-------------------------------------------------------------------------------------------------------------------
 Private Sub OrdenarIndicesPorDataAbertura(ByRef vDados As Variant, ByRef idx() As Long, _
-                                          ByVal n As Long, ByVal colData As Long)
+                                          ByVal n As Long, ByVal colDataAbert As Long, _
+                                          ByVal colDataSolic As Long)
     Dim grupos() As Long
     Dim valoresNum() As Double
+    Dim valoresSec() As Double
     Dim valoresTxt() As String
     Dim i As Long
     Dim j As Long
+    Dim rOrig As Long
+
     Dim idxChave As Long
     Dim grpChave As Long
     Dim numChave As Double
+    Dim secChave As Double
     Dim txtChave As String
+
+    Dim grpSolic As Long
+    Dim numSolic As Double
+    Dim txtSolic As String
 
     ReDim grupos(1 To n)
     ReDim valoresNum(1 To n)
+    ReDim valoresSec(1 To n)
     ReDim valoresTxt(1 To n)
 
     For i = 1 To n
-        ExtrairChaveOrdenacaoData vDados(idx(i), colData), grupos(i), valoresNum(i), valoresTxt(i)
+        rOrig = idx(i)
+        ExtrairChaveOrdenacaoData vDados(rOrig, colDataAbert), grupos(i), valoresNum(i), valoresTxt(i)
+
+        If colDataSolic > 0 Then
+            ExtrairChaveOrdenacaoData vDados(rOrig, colDataSolic), grpSolic, numSolic, txtSolic
+            If grpSolic = 0 Then
+                valoresSec(i) = numSolic
+            Else
+                valoresSec(i) = CDbl(rOrig)
+            End If
+        Else
+            valoresSec(i) = CDbl(rOrig)
+        End If
+
+        ' Se D. abertura estiver vazia, usa D. solicitação no Grupo 1 para manter todas as linhas juntas e ordenadas
+        If grupos(i) = 2 And colDataSolic > 0 Then
+            If grpSolic = 0 Then
+                grupos(i) = 1
+                valoresNum(i) = numSolic
+            End If
+        End If
     Next i
 
     For i = 2 To n
         idxChave = idx(i)
         grpChave = grupos(i)
         numChave = valoresNum(i)
+        secChave = valoresSec(i)
         txtChave = valoresTxt(i)
         j = i - 1
 
         Do While j >= 1
-            If CompararChavesData(grupos(j), valoresNum(j), valoresTxt(j), grpChave, numChave, txtChave) > 0 Then
+            If CompararChavesData(grupos(j), valoresNum(j), valoresSec(j), valoresTxt(j), _
+                                  grpChave, numChave, secChave, txtChave) > 0 Then
                 idx(j + 1) = idx(j)
                 grupos(j + 1) = grupos(j)
                 valoresNum(j + 1) = valoresNum(j)
+                valoresSec(j + 1) = valoresSec(j)
                 valoresTxt(j + 1) = valoresTxt(j)
                 j = j - 1
             Else
@@ -458,12 +519,13 @@ Private Sub OrdenarIndicesPorDataAbertura(ByRef vDados As Variant, ByRef idx() A
         idx(j + 1) = idxChave
         grupos(j + 1) = grpChave
         valoresNum(j + 1) = numChave
+        valoresSec(j + 1) = secChave
         valoresTxt(j + 1) = txtChave
     Next i
 End Sub
 
 '-------------------------------------------------------------------------------------------------------------------
-' SUBROTINA AUXILIAR: Extrai chave tipada para ordenação cronológica (0=Data válida, 1=Texto, 2=Vazio)
+' SUBROTINA AUXILIAR: Extrai chave tipada para ordenação cronológica (0=Data válida >0, 2=Vazio, 3=Texto)
 '-------------------------------------------------------------------------------------------------------------------
 Private Sub ExtrairChaveOrdenacaoData(ByVal vValor As Variant, ByRef lGrupo As Long, _
                                       ByRef dNum As Double, ByRef sTxt As String)
@@ -479,22 +541,30 @@ Private Sub ExtrairChaveOrdenacaoData(ByVal vValor As Variant, ByRef lGrupo As L
     If VarType(vValor) = vbDate Or VarType(vValor) = vbDouble Or _
        VarType(vValor) = vbSingle Or VarType(vValor) = vbLong Or _
        VarType(vValor) = vbInteger Or VarType(vValor) = vbCurrency Or VarType(vValor) = vbDecimal Then
-        lGrupo = 0
-        dNum = CDbl(vValor)
+        If CDbl(vValor) > 0# Then
+            lGrupo = 0
+            dNum = CDbl(vValor)
+        Else
+            lGrupo = 2
+        End If
         Exit Sub
     End If
 
-    sLimpo = Trim$(CStr(vValor))
+    sLimpo = LimparEspacosEspeciais(CStr(vValor))
     If Len(sLimpo) = 0 Then
         lGrupo = 2
     ElseIf IsNumeric(sLimpo) Then
-        lGrupo = 0
-        dNum = CDbl(sLimpo)
+        If CDbl(sLimpo) > 0# Then
+            lGrupo = 0
+            dNum = CDbl(sLimpo)
+        Else
+            lGrupo = 2
+        End If
     ElseIf IsDate(sLimpo) Then
         lGrupo = 0
         dNum = CDbl(CDate(sLimpo))
     Else
-        lGrupo = 1
+        lGrupo = 3
         sTxt = UCase$(sLimpo)
     End If
 End Sub
@@ -502,21 +572,25 @@ End Sub
 '-------------------------------------------------------------------------------------------------------------------
 ' FUNÇÃO AUXILIAR: Compara duas chaves extraídas (-1 se A < B, 0 se A = B, 1 se A > B)
 '-------------------------------------------------------------------------------------------------------------------
-Private Function CompararChavesData(ByVal grpA As Long, ByVal numA As Double, ByVal txtA As String, _
-                                    ByVal grpB As Long, ByVal numB As Double, ByVal txtB As String) As Long
+Private Function CompararChavesData(ByVal grpA As Long, ByVal numA As Double, ByVal secA As Double, ByVal txtA As String, _
+                                    ByVal grpB As Long, ByVal numB As Double, ByVal secB As Double, ByVal txtB As String) As Long
     If grpA < grpB Then
         CompararChavesData = -1
     ElseIf grpA > grpB Then
         CompararChavesData = 1
-    ElseIf grpA = 0 Then
+    ElseIf grpA = 0 Or grpA = 1 Then
         If numA < numB Then
             CompararChavesData = -1
         ElseIf numA > numB Then
             CompararChavesData = 1
+        ElseIf secA < secB Then
+            CompararChavesData = -1
+        ElseIf secA > secB Then
+            CompararChavesData = 1
         Else
             CompararChavesData = 0
         End If
-    ElseIf grpA = 1 Then
+    ElseIf grpA = 3 Then
         CompararChavesData = StrComp(txtA, txtB, vbTextCompare)
     Else
         CompararChavesData = 0
@@ -559,11 +633,11 @@ Private Function ObterIndiceColuna(ByVal tbl As ListObject, ByVal sTrechoNome As
     Dim sNomeLimpo As String
     Dim sTrechoLimpo As String
 
-    sTrechoLimpo = UCase$(Trim$(sTrechoNome))
+    sTrechoLimpo = UCase$(LimparEspacosEspeciais(sTrechoNome))
 
     ' 1ª passagem: correspondência exata
     For c = 1 To tbl.ListColumns.Count
-        sNomeLimpo = Trim$(Replace(Replace(UCase$(tbl.ListColumns(c).Name), vbLf, " "), vbCr, " "))
+        sNomeLimpo = UCase$(LimparEspacosEspeciais(tbl.ListColumns(c).Name))
         If sNomeLimpo = sTrechoLimpo Then
             ObterIndiceColuna = c
             Exit Function
@@ -572,7 +646,7 @@ Private Function ObterIndiceColuna(ByVal tbl As ListObject, ByVal sTrechoNome As
 
     ' 2ª passagem: correspondência parcial
     For c = 1 To tbl.ListColumns.Count
-        sNomeLimpo = Trim$(Replace(Replace(UCase$(tbl.ListColumns(c).Name), vbLf, " "), vbCr, " "))
+        sNomeLimpo = UCase$(LimparEspacosEspeciais(tbl.ListColumns(c).Name))
         If InStr(1, sNomeLimpo, sTrechoLimpo, vbTextCompare) > 0 Then
             ObterIndiceColuna = c
             Exit Function
@@ -714,7 +788,6 @@ Private Sub ReaplicarCondicionaisDuplicados(ByVal wsMonit As Worksheet, ByVal tb
     If Not bAlgumaAtiva Then Exit Sub
 
     On Error Resume Next
-    ' Remove fragmentos antigos de xlUniqueValues na aba para evitar regras órfãs até a linha 1048576
     For i = wsMonit.Cells.FormatConditions.Count To 1 Step -1
         Set fcObj = wsMonit.Cells.FormatConditions.Item(i)
         If Not fcObj Is Nothing Then
@@ -724,7 +797,6 @@ Private Sub ReaplicarCondicionaisDuplicados(ByVal wsMonit As Worksheet, ByVal tb
         End If
     Next i
 
-    ' Recria 1 regra limpa por coluna cobrindo exatamente todas as linhas atuais da tabela (>= 700)
     For c = 1 To tbl.ListColumns.Count
         If vCond(c).Ativo Then
             Set rngCol = tbl.ListColumns(c).DataBodyRange

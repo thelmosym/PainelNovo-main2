@@ -177,6 +177,8 @@ Cada inconsistência gera um texto padronizado com prefixo identificando a colun
 | **Coluna V:** Localidade | Localidade desativada (`Flag = "N"`) | `(Coluna V): Localidade não ativa. Informe o responsável; ` |
 | **Colunas D e V:** Contrato $\times$ Localidade (Tabela B) | Localidade pertence a contrato homologado diferente do informado na Coluna D | `(Coluna D e V): Localidade '<Loc>' pertence ao contrato '<ContratoEsperado>' (UF: <UF>), mas o contrato informado é '<Contrato>'; ` |
 | **Colunas D e V:** Contrato $\times$ Localidade (Tabela B) | Localidade informada não existe na base da Tabela B | `(Coluna D e V): Localidade '<Loc>' não cadastrada na TabelaB para validação de contrato; ` |
+| **Colunas E e V:** UF $\times$ Localidade | A `Localidade` informada não pertence ao estado (`UF`) informado na Coluna E (cruzamento `Localidade` $\to$ `Centro` $\to$ `UF` na `TabelaB`) | `(Coluna E e V): Localidade '<LOC>' pertence à UF '<UF_ESP>' (Centro: <CEN>), mas a UF informada é '<UF_INF>'; ` |
+| **Colunas D e V:** Contrato $\times$ Localidade | A `Localidade` informada pertence geograficamente a outro contrato na `TabelaB` | `(Coluna D e V): Localidade '<LOC>' pertence ao contrato '<CTR_ESP>' (UF: <UF>), mas o contrato informado é '<CTR_INF>'; ` |
 | **Coluna Y:** OS Disponibilizada? | Campo vazio | `(Coluna Y): Campo vazio. Preenchimento obrigatório; ` |
 | **Coluna Y:** OS Disponibilizada? | Preenchido com valor diferente de `<SIM>` ou `<NÃO>` | `(Coluna Y): Permitido apenas <SIM> ou <NÃO>; ` |
 
@@ -184,34 +186,35 @@ Cada inconsistência gera um texto padronizado com prefixo identificando a colun
 
 ## 6. Resolução Relacional da Tabela B (Contrato $\times$ Localidade)
 
-Uma das maiores inovações do módulo é o motor relacional que valida a integridade geográfica e jurídica das solicitações. Para cada registro, a rotina navega na árvore de tabelas da **`TabelaB`**:
+Uma das maiores inovações do módulo é o motor relacional que valida a integridade geográfica e jurídica das solicitações. Para cada registro, a rotina localiza **dinamicamente pelos cabeçalhos da Linha 1** (com fallback posicional legado caso um cabeçalho não exista) e navega na árvore de tabelas da **`TabelaB`**:
 
 ```
 [Localidade Informada (Col V)]
          │
          ▼
-[Tabela Localidade] ──(Cols 36-37)──> [Centro Petrobras]
-                                             │
-                                             ▼
-[Tabela Centro]     ──(Cols 38, 45)─> [UF da Prestação]
-                                             │
-                                             ▼
-[Tabela Grupo / Contratos] ──────────> [Contrato Homologado Petrobras]
-                                       • IRON-LT1 (SAP 4600686987): RJ, SP, ES, DF, GO, MG, etc.
-                                       • PA-LT2   (SAP 4600687006): BA, SE, RN, AM, CE, PE, etc.
-                                       • T2M      (SAP 4600617111): RJ
+[Tabela Localidade] ──(Localidade#Localidade / Localidade#Centro)──> [Centro Petrobras]
+                                                                            │
+                                                                            ▼
+[Tabela Centro]     ──(Centro#Centro / Centro#UF)──────────────────> [UF da Prestação]
+                                                                            │
+                                                                            ▼
+[Tabela Grupo / Contratos] ──(Grupo#UF / Grupo#Contrato + SAP)─────> [Contrato Homologado Petrobras]
+                                                                     • IRON-LT1 (SAP 4600686987): RJ, SP, ES, DF, GO, MG, etc.
+                                                                     • PA-LT2   (SAP 4600687006): BA, SE, RN, AM, CE, PE, etc.
+                                                                     • T2M      (SAP 4600617111): RJ
 ```
 
 ### Casos Especiais Atendidos:
-1. **Centro Informado Diretamente na Coluna Localidade:** Em diversas frentes operacionais, o usuário digita o nome do próprio Centro (ex.: `PORTO ENCONTRO DAS AGUAS`, `IMBETIBA`, `EDIRN`). O carregador mapeia tanto as localidades filhas quanto os próprios nomes dos Centros, evitando falsos positivos.
-2. **Dupla Nomenclatura (Sigla e Código SAP):** Reconhece indistintamente o uso da sigla contratual (`IRON-LT1`, `PA-LT2`) e o número SAP do pedido (`4600686987`, `4600687006`).
+1. **Resolução Dinâmica de Colunas (`LocalizarColunaTabelaB`):** Se novas colunas forem inseridas ou reordenadas em `TabelaB-V2.xlsx`, a auditoria localiza automaticamente `Localidade#Localidade`, `Localidade#Centro`, `Centro#Centro`, `Centro#UF`, `Grupo#UF`, `Grupo#Contrato`, `Contrato#Contrato` e `Contrato#Contrato SAP` na Linha 1 (mantendo fallback seguro para os índices `36, 37, 38, 45, 56, 60, 1, 4`).
+2. **Centro Informado Diretamente na Coluna Localidade:** Em diversas frentes operacionais, o usuário digita o nome do próprio Centro (ex.: `PORTO ENCONTRO DAS AGUAS`, `IMBETIBA`, `EDIRN`, `EDIBA`). O carregador mapeia tanto as localidades filhas quanto os próprios nomes dos Centros, evitando falsos positivos.
+3. **Dupla Nomenclatura (Sigla e Código SAP) & Higienização de `Chr(160)`:** Reconhece indistintamente o uso da sigla contratual (`IRON-LT1`, `PA-LT2`, `T2M`) e o número SAP do pedido (`4600686987`, `4600687006`, `4600617111`), além de remover espaços não-quebráveis (`&nbsp;` oriundos do ServiceNow).
 
 ---
 
 ## 7. Como Utilizar e Operar a Rotina
 
 ### Pelo Usuário no Microsoft Excel:
-1. Abra a planilha de monitoramento (`Monitoramento individual_<LOTE>_v4.xlsm`).
+1. Abra a planilha de monitoramento (`Monitoramento individual_<LOTE>_V.10.xlsm`).
 2. Acesse a aba **`Monitoramento`**.
 3. Clique no botão de auditoria existente na planilha (vinculado a `AnalisarErrosMonitoramentoEGerarLog`).
 4. Confirme a execução na mensagem inicial.
@@ -224,7 +227,7 @@ $excel = New-Object -ComObject Excel.Application
 $excel.Visible = $false
 $excel.AutomationSecurity = 1 # msoAutomationSecurityLow
 
-$wb = $excel.Workbooks.Open("D:\PainelNovo-main\Monitoramento\Monitoramento individual_A4UU_v4.xlsm")
+$wb = $excel.Workbooks.Open("D:\PainelNovo-main\Monitoramento\Monitoramento individual_A4UU_V.10.xlsm", 0)
 # Disparo silencioso sem janelas modais
 $excel.Run("AnalisarErrosMonitoramento_Silencioso")
 

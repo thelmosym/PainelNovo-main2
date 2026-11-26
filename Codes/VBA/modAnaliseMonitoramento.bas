@@ -79,6 +79,9 @@ Private Sub ExecutarAnaliseMonitoramento(ByVal bSilencioso As Boolean)
     Dim dictSiglasObs   As Object
     Dim dictLocalidades As Object ' Armazena flag "S" ou "N"
     Dim dictPrazoAtiv   As Object ' "Fiscalização" ou "Tabela"
+    Dim dictLocUF          As Object ' Localidade -> UF(s) permitida(s) via Localidade->Centro (ex: "|SP|")
+    Dim dictLocCentro      As Object ' Localidade -> Centro(s) resolvido(s) na TabelaB
+    Dim dictLocSemCentroUF As Object ' Localidade cadastrada cujo Centro não tem UF na aba Centro
     Dim dictLocContrato As Object ' Localidade -> Contratos permitidos (ex: "|IRON-LT1|4600686987|")
     Dim dictLocInfo     As Object ' Localidade -> "UF|Centro|ContratoPrincipal"
     
@@ -168,6 +171,9 @@ Private Sub ExecutarAnaliseMonitoramento(ByVal bSilencioso As Boolean)
     Set dictSiglasObs = CreateObject("Scripting.Dictionary")
     Set dictLocalidades = CreateObject("Scripting.Dictionary")
     Set dictPrazoAtiv = CreateObject("Scripting.Dictionary")
+    Set dictLocUF = CreateObject("Scripting.Dictionary")
+    Set dictLocCentro = CreateObject("Scripting.Dictionary")
+    Set dictLocSemCentroUF = CreateObject("Scripting.Dictionary")
     Set dictLocContrato = CreateObject("Scripting.Dictionary")
     Set dictLocInfo = CreateObject("Scripting.Dictionary")
     
@@ -182,12 +188,16 @@ Private Sub ExecutarAnaliseMonitoramento(ByVal bSilencioso As Boolean)
     dictSiglasObs.CompareMode = vbTextCompare
     dictLocalidades.CompareMode = vbTextCompare
     dictPrazoAtiv.CompareMode = vbTextCompare
+    dictLocUF.CompareMode = vbTextCompare
+    dictLocCentro.CompareMode = vbTextCompare
+    dictLocSemCentroUF.CompareMode = vbTextCompare
     dictLocContrato.CompareMode = vbTextCompare
     dictLocInfo.CompareMode = vbTextCompare
     
     CarregarDicionariosReferencia wsRef, dictSituacoes, dictContratos, dictUFs, dictContratoUF, _
                                   dictAtividades, dictItens, dictAtivItem, dictAplicacoes, _
                                   dictSiglasObs, dictLocalidades, dictPrazoAtiv, _
+                                  dictLocUF, dictLocCentro, dictLocSemCentroUF, _
                                   dictLocContrato, dictLocInfo
     
     '=== 4. LEITURA EM BLOCO DOS DADOS DA PLANILHA MONITORAMENTO ===
@@ -212,6 +222,7 @@ Private Sub ExecutarAnaliseMonitoramento(ByVal bSilencioso As Boolean)
                                   dictSituacoes, dictContratos, dictUFs, dictContratoUF, _
                                   dictAtividades, dictItens, dictAtivItem, dictAplicacoes, _
                                   dictSiglasObs, dictLocalidades, dictPrazoAtiv, _
+                                  dictLocUF, dictLocCentro, dictLocSemCentroUF, _
                                   dictLocContrato, dictLocInfo
         
         If bLinhaAuditada Then
@@ -282,6 +293,8 @@ Private Sub AuditarLinhaMonitoramento(ByRef vDados As Variant, ByVal r As Long, 
                                      ByRef dictAtivItem As Object, ByRef dictAplicacoes As Object, _
                                      ByRef dictSiglasObs As Object, ByRef dictLocalidades As Object, _
                                      ByRef dictPrazoAtiv As Object, _
+                                     ByRef dictLocUF As Object, ByRef dictLocCentro As Object, _
+                                     ByRef dictLocSemCentroUF As Object, _
                                      ByRef dictLocContrato As Object, ByRef dictLocInfo As Object)
 
     ' Mapeamento de colunas em vDados(r, c):
@@ -389,8 +402,8 @@ Private Sub AuditarLinhaMonitoramento(ByRef vDados As Variant, ByVal r As Long, 
     ' Extrai e limpa os demais valores da linha
     sAtendente = Trim(CStr(vDados(r, 1) & ""))
     sPerFat = Trim(CStr(vDados(r, 2) & ""))
-    sContrato = Trim(CStr(vDados(r, 4) & ""))
-    sUF = UCase(Trim(CStr(vDados(r, 5) & "")))
+    sContrato = LimparTextoTabelaB(CStr(vDados(r, 4) & ""))
+    sUF = UCase(LimparTextoTabelaB(CStr(vDados(r, 5) & "")))
     sAtividade = Trim(CStr(vDados(r, 6) & ""))
     sItem = Trim(CStr(vDados(r, 7) & ""))
     sAplicacao = Trim(CStr(vDados(r, 8) & ""))
@@ -400,7 +413,7 @@ Private Sub AuditarLinhaMonitoramento(ByRef vDados As Variant, ByVal r As Long, 
     sGerencia = Trim(CStr(vDados(r, 14) & ""))
     sCodOS = Trim(CStr(vDados(r, 16) & ""))
     sSiglaObs = Trim(CStr(vDados(r, 21) & ""))
-    sLocalidade = Trim(CStr(vDados(r, 22) & ""))
+    sLocalidade = LimparTextoTabelaB(CStr(vDados(r, 22) & ""))
     sOSDisp = UCase(Trim(CStr(vDados(r, 25) & "")))
     
     vDtSol = vDados(r, 12)
@@ -611,10 +624,47 @@ Private Sub AuditarLinhaMonitoramento(ByRef vDados As Variant, ByVal r As Long, 
         End If
     End If
     
-    '--- 22b. COLUNAS D e V: CONSISTÊNCIA CONTRATO x LOCALIDADE (TABELAB) ---
-    If Len(sContrato) > 0 And Len(sLocalidade) > 0 Then
-        Dim sLocBusca As String
-        sLocBusca = UCase(Trim(Replace(sLocalidade, "  ", " ")))
+    '--- 22b. COLUNAS E e V: CONSISTÊNCIA UF x LOCALIDADE (TABELAB: LOCALIDADE -> CENTRO -> UF) ---
+    Dim sLocBusca As String
+    sLocBusca = UCase$(LimparTextoTabelaB(sLocalidade))
+    
+    If Len(sUF) > 0 And Len(sLocBusca) > 0 Then
+        If dictLocUF.Count > 0 Then
+            If dictLocUF.Exists(sLocBusca) Then
+                Dim sUFsValidasLoc As String
+                Dim sUFTestar As String
+                sUFsValidasLoc = CStr(dictLocUF(sLocBusca))
+                sUFTestar = "|" & sUF & "|"
+                
+                If InStr(1, sUFsValidasLoc, sUFTestar, vbTextCompare) = 0 Then
+                    Dim sUFEsperadaLoc As String
+                    Dim sCentroEsperadoLoc As String
+                    
+                    ' Remove barras laterais para exibição amigável (ex: "|SP|" -> "SP")
+                    sUFEsperadaLoc = Mid$(sUFsValidasLoc, 2, Len(sUFsValidasLoc) - 2)
+                    sUFEsperadaLoc = Replace(sUFEsperadaLoc, "|", "/")
+                    
+                    If dictLocCentro.Exists(sLocBusca) Then
+                        sCentroEsperadoLoc = CStr(dictLocCentro(sLocBusca))
+                    Else
+                        sCentroEsperadoLoc = sLocBusca
+                    End If
+                    
+                    sLog = sLog & "(Coluna E e V): Localidade '" & sLocalidade & "' pertence à UF '" & _
+                                  sUFEsperadaLoc & "' (Centro: " & sCentroEsperadoLoc & "), mas a UF informada é '" & _
+                                  sUF & "'; "
+                End If
+            ElseIf dictLocSemCentroUF.Exists(sLocBusca) Then
+                sLog = sLog & "(Coluna E e V): Localidade '" & sLocalidade & "' vinculada ao Centro '" & _
+                              CStr(dictLocSemCentroUF(sLocBusca)) & "' sem UF cadastrada na tabela Centro da TabelaB; "
+            Else
+                sLog = sLog & "(Coluna E e V): Localidade '" & sLocalidade & "' não cadastrada nas tabelas Localidade/Centro da TabelaB para validação de UF; "
+            End If
+        End If
+    End If
+    
+    '--- 22c. COLUNAS D e V: CONSISTÊNCIA CONTRATO x LOCALIDADE (TABELAB) ---
+    If Len(sContrato) > 0 And Len(sLocBusca) > 0 Then
         
         If dictLocContrato.Count > 0 Then
             If dictLocContrato.Exists(sLocBusca) Then
@@ -670,6 +720,8 @@ Private Sub CarregarDicionariosReferencia(ByVal wsRef As Worksheet, _
                                          ByRef dictAtivItem As Object, ByRef dictAplicacoes As Object, _
                                          ByRef dictSiglasObs As Object, ByRef dictLocalidades As Object, _
                                          ByRef dictPrazoAtiv As Object, _
+                                         ByRef dictLocUF As Object, ByRef dictLocCentro As Object, _
+                                         ByRef dictLocSemCentroUF As Object, _
                                          ByRef dictLocContrato As Object, ByRef dictLocInfo As Object)
 
     Dim ulRef As Long
@@ -739,7 +791,7 @@ Private Sub CarregarDicionariosReferencia(ByVal wsRef As Worksheet, _
         If Len(sVal1) > 0 Then dictSiglasObs(sVal1) = True
         
         ' Coluna AK (37) - Localidades e AM (39) - Ativo (S/N)
-        sVal1 = Trim(CStr(vRef(r, 37) & ""))
+        sVal1 = LimparTextoTabelaB(CStr(vRef(r, 37) & ""))
         sFlag = UCase(Trim(CStr(vRef(r, 39) & "")))
         If Len(sVal1) > 0 Then
             If Len(sFlag) = 0 Then sFlag = "S"
@@ -760,10 +812,10 @@ Private Sub CarregarDicionariosReferencia(ByVal wsRef As Worksheet, _
 
     ' =====================================================================================
     ' CARREGAMENTO DA TABELAB: Mapeamento Localidade -> Centro -> UF -> Contrato
-    ' Valida se o contrato informado condiz com a localidade através da cadeia:
-    ' 1. Localidade (Col 36) -> Centro (Col 37)
-    ' 2. Centro (Col 38) -> UF (Col 45) e Município (Col 44)
-    ' 3. Grupo (Cols 56 e 60) e Contrato (Cols 1 e 4): UF -> Contrato(s) homologado(s)
+    ' Resolve dinamicamente os cabeçalhos da linha 1 (com fallback posicional seguro):
+    ' 1. Localidade#Localidade -> Localidade#Centro
+    ' 2. Centro#Centro -> Centro#UF
+    ' 3. Grupo#UF -> Grupo#Contrato (e Contrato#Contrato <-> Contrato#Contrato SAP)
     ' =====================================================================================
     Dim wsTabelaB As Worksheet
     On Error Resume Next
@@ -773,14 +825,40 @@ Private Sub CarregarDicionariosReferencia(ByVal wsRef As Worksheet, _
     
     If Not wsTabelaB Is Nothing Then
         Dim ulB As Long
-        ulB = wsTabelaB.UsedRange.Rows.Count
+        Dim lastColUsedB As Long
+        Dim lastColHeaderB As Long
+        
+        ulB = wsTabelaB.UsedRange.Row + wsTabelaB.UsedRange.Rows.Count - 1
         If ulB >= 2 Then
             Dim vTB As Variant
             Dim numColsB As Long
-            numColsB = wsTabelaB.UsedRange.Columns.Count
-            If numColsB < 60 Then numColsB = 65
+            
+            lastColUsedB = wsTabelaB.UsedRange.Column + wsTabelaB.UsedRange.Columns.Count - 1
+            lastColHeaderB = wsTabelaB.Cells(1, wsTabelaB.Columns.Count).End(xlToLeft).Column
+            numColsB = lastColUsedB
+            If lastColHeaderB > numColsB Then numColsB = lastColHeaderB
+            If numColsB < 65 Then numColsB = 65
             
             vTB = wsTabelaB.Range(wsTabelaB.Cells(1, 1), wsTabelaB.Cells(ulB, numColsB)).Value
+            
+            ' Resolução dinâmica das colunas pelo cabeçalho da Linha 1 (com fallback legado)
+            Dim colConSigla As Long
+            Dim colConSAP As Long
+            Dim colLocNome As Long
+            Dim colLocCentro As Long
+            Dim colCenNome As Long
+            Dim colCenUF As Long
+            Dim colGrupoUF As Long
+            Dim colGrupoContrato As Long
+            
+            colConSigla = LocalizarColunaTabelaB(vTB, "Contrato#Contrato", "", 1)
+            colConSAP = LocalizarColunaTabelaB(vTB, "Contrato#Contrato SAP", "Contrato#SAP", 4)
+            colLocNome = LocalizarColunaTabelaB(vTB, "Localidade#Localidade", "", 36)
+            colLocCentro = LocalizarColunaTabelaB(vTB, "Localidade#Centro", "", 37)
+            colCenNome = LocalizarColunaTabelaB(vTB, "Centro#Centro", "", 38)
+            colCenUF = LocalizarColunaTabelaB(vTB, "Centro#UF", "", 45)
+            colGrupoUF = LocalizarColunaTabelaB(vTB, "Grupo#UF", "", 56)
+            colGrupoContrato = LocalizarColunaTabelaB(vTB, "Grupo#Contrato", "", 60)
             
             ' Dicionários temporários para resolução de relacionamentos
             Dim dictCentroToUF As Object
@@ -798,7 +876,7 @@ Private Sub CarregarDicionariosReferencia(ByVal wsRef As Worksheet, _
             dictUFToContratos.CompareMode = vbTextCompare
             dictSAPToContrato.CompareMode = vbTextCompare
             
-            ' Equivalências contratuais SAP <-> Sigla
+            ' Equivalências contratuais base SAP <-> Sigla
             dictSAPToContrato("4600686987") = "IRON-LT1"
             dictSAPToContrato("4600687006") = "PA-LT2"
             dictSAPToContrato("4600617111") = "T2M"
@@ -807,35 +885,52 @@ Private Sub CarregarDicionariosReferencia(ByVal wsRef As Worksheet, _
             dictSAPToContrato("T2M") = "4600617111"
             
             Dim rB As Long
+            Dim sConSiglaTB As String, sConSAPTB As String
             Dim sCen As String, sUFCen As String
             Dim sLocNome As String, sCenLoc As String
             Dim sUFGrupo As String, sContratoGrupo As String
             
-            ' Passo 1: Carrega Centro -> UF (Cols 38 e 45)
-            For rB = 2 To UBound(vTB, 1)
-                sCen = UCase(Trim(Replace(CStr(vTB(rB, 38) & ""), "  ", " ")))
-                sUFCen = UCase(Trim(CStr(vTB(rB, 45) & "")))
-                If Len(sCen) > 0 And Len(sUFCen) > 0 Then
-                    If Not dictCentroToUF.Exists(sCen) Then
-                        dictCentroToUF(sCen) = sUFCen
+            ' Passo 0: Enriquece equivalências Contrato <-> SAP diretamente da TabelaB
+            If colConSigla > 0 And colConSAP > 0 Then
+                For rB = 2 To UBound(vTB, 1)
+                    sConSiglaTB = UCase$(LimparTextoTabelaB(CStr(vTB(rB, colConSigla) & "")))
+                    sConSAPTB = UCase$(LimparTextoTabelaB(CStr(vTB(rB, colConSAP) & "")))
+                    If Len(sConSiglaTB) > 0 And Len(sConSAPTB) > 0 Then
+                        dictSAPToContrato(sConSiglaTB) = sConSAPTB
+                        dictSAPToContrato(sConSAPTB) = sConSiglaTB
                     End If
-                End If
-            Next rB
+                Next rB
+            End If
             
-            ' Passo 2: Carrega Grupo: UF -> Contrato (Cols 56 e 60)
-            For rB = 2 To UBound(vTB, 1)
-                sUFGrupo = UCase(Trim(CStr(vTB(rB, 56) & "")))
-                sContratoGrupo = UCase(Trim(CStr(vTB(rB, 60) & "")))
-                If Len(sUFGrupo) > 0 And Len(sContratoGrupo) > 0 Then
-                    If Not dictUFToContratos.Exists(sUFGrupo) Then
-                        dictUFToContratos(sUFGrupo) = sContratoGrupo
-                    Else
-                        If InStr(1, dictUFToContratos(sUFGrupo), sContratoGrupo, vbTextCompare) = 0 Then
-                            dictUFToContratos(sUFGrupo) = dictUFToContratos(sUFGrupo) & "|" & sContratoGrupo
+            ' Passo 1: Carrega Centro -> UF (Centro#Centro e Centro#UF)
+            If colCenNome > 0 And colCenUF > 0 Then
+                For rB = 2 To UBound(vTB, 1)
+                    sCen = UCase$(LimparTextoTabelaB(CStr(vTB(rB, colCenNome) & "")))
+                    sUFCen = UCase$(LimparTextoTabelaB(CStr(vTB(rB, colCenUF) & "")))
+                    If Len(sCen) > 0 And Len(sUFCen) > 0 Then
+                        If Not dictCentroToUF.Exists(sCen) Then
+                            dictCentroToUF(sCen) = sUFCen
                         End If
                     End If
-                End If
-            Next rB
+                Next rB
+            End If
+            
+            ' Passo 2: Carrega Grupo: UF -> Contrato (Grupo#UF e Grupo#Contrato)
+            If colGrupoUF > 0 And colGrupoContrato > 0 Then
+                For rB = 2 To UBound(vTB, 1)
+                    sUFGrupo = UCase$(LimparTextoTabelaB(CStr(vTB(rB, colGrupoUF) & "")))
+                    sContratoGrupo = UCase$(LimparTextoTabelaB(CStr(vTB(rB, colGrupoContrato) & "")))
+                    If Len(sUFGrupo) > 0 And Len(sContratoGrupo) > 0 Then
+                        If Not dictUFToContratos.Exists(sUFGrupo) Then
+                            dictUFToContratos(sUFGrupo) = sContratoGrupo
+                        Else
+                            If InStr(1, "|" & dictUFToContratos(sUFGrupo) & "|", "|" & sContratoGrupo & "|", vbTextCompare) = 0 Then
+                                dictUFToContratos(sUFGrupo) = dictUFToContratos(sUFGrupo) & "|" & sContratoGrupo
+                            End If
+                        End If
+                    End If
+                Next rB
+            End If
             
             ' Fallbacks regionais contratuais homologados Petrobras
             If Not dictUFToContratos.Exists("RJ") Then dictUFToContratos("RJ") = "IRON-LT1"
@@ -846,80 +941,115 @@ Private Sub CarregarDicionariosReferencia(ByVal wsRef As Worksheet, _
             If Not dictUFToContratos.Exists("RN") Then dictUFToContratos("RN") = "PA-LT2"
             If Not dictUFToContratos.Exists("AM") Then dictUFToContratos("AM") = "PA-LT2"
             
-            ' Passo 3: Carrega Localidade -> Centro (Cols 36 e 37)
-            For rB = 2 To UBound(vTB, 1)
-                sLocNome = UCase(Trim(Replace(CStr(vTB(rB, 36) & ""), "  ", " ")))
-                sCenLoc = UCase(Trim(Replace(CStr(vTB(rB, 37) & ""), "  ", " ")))
-                If Len(sLocNome) > 0 Then
-                    If Len(sCenLoc) > 0 Then
-                        dictLocToCentro(sLocNome) = sCenLoc
-                    Else
-                        dictLocToCentro(sLocNome) = sLocNome
+            ' Passo 3: Carrega Localidade -> Centro(s) (Localidade#Localidade e Localidade#Centro)
+            If colLocNome > 0 And colLocCentro > 0 Then
+                For rB = 2 To UBound(vTB, 1)
+                    sLocNome = UCase$(LimparTextoTabelaB(CStr(vTB(rB, colLocNome) & "")))
+                    sCenLoc = UCase$(LimparTextoTabelaB(CStr(vTB(rB, colLocCentro) & "")))
+                    If Len(sLocNome) > 0 Then
+                        If Len(sCenLoc) = 0 Then sCenLoc = sLocNome
+                        If Not dictLocToCentro.Exists(sLocNome) Then
+                            dictLocToCentro(sLocNome) = sCenLoc
+                        Else
+                            If InStr(1, "|" & dictLocToCentro(sLocNome) & "|", "|" & sCenLoc & "|", vbTextCompare) = 0 Then
+                                dictLocToCentro(sLocNome) = dictLocToCentro(sLocNome) & "|" & sCenLoc
+                            End If
+                        End If
                     End If
-                End If
-            Next rB
+                Next rB
+            End If
             
-            ' Passo 4: Mapeia todas as Localidades cadastradas
+            ' Passo 4: Mapeia todas as Localidades cadastradas (Localidade -> Centro -> UF e UF -> Contrato)
             Dim vLocKeys As Variant
             Dim iL As Long
+            Dim vCensLoc As Variant
+            Dim idxCen As Long
+            Dim sCenCand As String
             Dim sTargetLoc As String, sTargetCen As String, sTargetUF As String
+            Dim sUFsAcum As String, sCensAcum As String
             Dim sContratosPerm As String, sContratoPrin As String
             
-            vLocKeys = dictLocToCentro.Keys
-            For iL = 0 To UBound(vLocKeys)
-                sTargetLoc = CStr(vLocKeys(iL))
-                sTargetCen = dictLocToCentro(sTargetLoc)
-                sTargetUF = ""
-                
-                ' Tenta achar UF pelo Centro mapeado
-                If dictCentroToUF.Exists(sTargetCen) Then
-                    sTargetUF = dictCentroToUF(sTargetCen)
-                ElseIf dictCentroToUF.Exists(sTargetLoc) Then
-                    ' A própria localidade é o nome do Centro (ex: PORTO ENCONTRO DAS AGUAS)
-                    sTargetUF = dictCentroToUF(sTargetLoc)
-                    sTargetCen = sTargetLoc
-                End If
-                
-                If Len(sTargetUF) > 0 Then
-                    If dictUFToContratos.Exists(sTargetUF) Then
-                        sContratoPrin = dictUFToContratos(sTargetUF)
-                        ' Monta string de contratos permitidos para checagem rápida (|IRON-LT1|4600686987|IRON|)
-                        sContratosPerm = "|" & sContratoPrin & "|"
-                        If sContratoPrin = "IRON-LT1" Then
-                            sContratosPerm = sContratosPerm & "4600686987|IRON|"
-                        ElseIf sContratoPrin = "PA-LT2" Then
-                            sContratosPerm = sContratosPerm & "4600687006|PA|"
-                        ElseIf sContratoPrin = "T2M" Then
-                            sContratosPerm = sContratosPerm & "4600617111|"
+            If dictLocToCentro.Count > 0 Then
+                vLocKeys = dictLocToCentro.Keys
+                For iL = 0 To UBound(vLocKeys)
+                    sTargetLoc = CStr(vLocKeys(iL))
+                    vCensLoc = Split(CStr(dictLocToCentro(sTargetLoc)), "|")
+                    sUFsAcum = "|"
+                    sCensAcum = ""
+                    sTargetCen = ""
+                    sTargetUF = ""
+                    
+                    For idxCen = LBound(vCensLoc) To UBound(vCensLoc)
+                        sCenCand = CStr(vCensLoc(idxCen))
+                        If dictCentroToUF.Exists(sCenCand) Then
+                            If Len(sTargetUF) = 0 Then
+                                sTargetUF = CStr(dictCentroToUF(sCenCand))
+                                sTargetCen = sCenCand
+                            End If
+                            If InStr(1, sUFsAcum, "|" & CStr(dictCentroToUF(sCenCand)) & "|", vbTextCompare) = 0 Then
+                                sUFsAcum = sUFsAcum & CStr(dictCentroToUF(sCenCand)) & "|"
+                            End If
+                            If Len(sCensAcum) = 0 Then
+                                sCensAcum = sCenCand
+                            ElseIf InStr(1, "|" & sCensAcum & "|", "|" & sCenCand & "|", vbTextCompare) = 0 Then
+                                sCensAcum = sCensAcum & "/" & sCenCand
+                            End If
                         End If
-                        
-                        dictLocContrato(sTargetLoc) = sContratosPerm
-                        dictLocInfo(sTargetLoc) = sTargetUF & "|" & sTargetCen & "|" & sContratoPrin
+                    Next idxCen
+                    
+                    ' Fallback quando a própria Localidade coincide com o nome do Centro (ex: PORTO ENCONTRO DAS AGUAS)
+                    If Len(sTargetUF) = 0 And dictCentroToUF.Exists(sTargetLoc) Then
+                        sTargetUF = CStr(dictCentroToUF(sTargetLoc))
+                        sTargetCen = sTargetLoc
+                        sUFsAcum = "|" & sTargetUF & "|"
+                        sCensAcum = sTargetLoc
                     End If
-                End If
-            Next iL
+                    
+                    If Len(sTargetUF) > 0 Then
+                        ' Registra mapeamento direto Localidade -> UF(s) e Centro(s) (Tabelas Localidade e Centro da TabelaB)
+                        dictLocUF(sTargetLoc) = sUFsAcum
+                        dictLocCentro(sTargetLoc) = sCensAcum
+                        
+                        If dictUFToContratos.Exists(sTargetUF) Then
+                            sContratoPrin = dictUFToContratos(sTargetUF)
+                            sContratosPerm = MontarContratosPermitidos(sContratoPrin, dictSAPToContrato)
+                            
+                            dictLocContrato(sTargetLoc) = sContratosPerm
+                            dictLocInfo(sTargetLoc) = sTargetUF & "|" & sTargetCen & "|" & sContratoPrin
+                        End If
+                    Else
+                        ' Localidade existe na aba Localidade, mas seu Centro não possui UF na aba Centro
+                        dictLocSemCentroUF(sTargetLoc) = Replace(CStr(dictLocToCentro(sTargetLoc)), "|", "/")
+                    End If
+                Next iL
+            End If
             
-            ' Passo 5: Registra também todos os Centros diretamente como Localidades
+            ' Passo 5: Registra também todos os Centros diretamente como Localidades (UF e Contrato)
             Dim vCenKeys As Variant
             Dim iC As Long
-            vCenKeys = dictCentroToUF.Keys
-            For iC = 0 To UBound(vCenKeys)
-                sTargetCen = CStr(vCenKeys(iC))
-                If Not dictLocContrato.Exists(sTargetCen) Then
-                    sTargetUF = dictCentroToUF(sTargetCen)
-                    If dictUFToContratos.Exists(sTargetUF) Then
-                        sContratoPrin = dictUFToContratos(sTargetUF)
-                        sContratosPerm = "|" & sContratoPrin & "|"
-                        If sContratoPrin = "IRON-LT1" Then
-                            sContratosPerm = sContratosPerm & "4600686987|IRON|"
-                        ElseIf sContratoPrin = "PA-LT2" Then
-                            sContratosPerm = sContratosPerm & "4600687006|PA|"
-                        End If
-                        dictLocContrato(sTargetCen) = sContratosPerm
-                        dictLocInfo(sTargetCen) = sTargetUF & "|" & sTargetCen & "|" & sContratoPrin
+            If dictCentroToUF.Count > 0 Then
+                vCenKeys = dictCentroToUF.Keys
+                For iC = 0 To UBound(vCenKeys)
+                    sTargetCen = CStr(vCenKeys(iC))
+                    sTargetUF = CStr(dictCentroToUF(sTargetCen))
+                    
+                    If Not dictLocUF.Exists(sTargetCen) Then
+                        dictLocUF(sTargetCen) = "|" & sTargetUF & "|"
+                        dictLocCentro(sTargetCen) = sTargetCen
+                    ElseIf InStr(1, CStr(dictLocUF(sTargetCen)), "|" & sTargetUF & "|", vbTextCompare) = 0 Then
+                        dictLocUF(sTargetCen) = CStr(dictLocUF(sTargetCen)) & sTargetUF & "|"
                     End If
-                End If
-            Next iC
+                    
+                    If Not dictLocContrato.Exists(sTargetCen) Then
+                        If dictUFToContratos.Exists(sTargetUF) Then
+                            sContratoPrin = dictUFToContratos(sTargetUF)
+                            sContratosPerm = MontarContratosPermitidos(sContratoPrin, dictSAPToContrato)
+                            dictLocContrato(sTargetCen) = sContratosPerm
+                            dictLocInfo(sTargetCen) = sTargetUF & "|" & sTargetCen & "|" & sContratoPrin
+                        End If
+                    End If
+                Next iC
+            End If
             
             Set dictCentroToUF = Nothing
             Set dictLocToCentro = Nothing
@@ -929,6 +1059,120 @@ Private Sub CarregarDicionariosReferencia(ByVal wsRef As Worksheet, _
     End If
 
 End Sub
+
+'-------------------------------------------------------------------------------------------------------------------
+' FUNÇÕES AUXILIARES DE RESOLUÇÃO DINÂMICA DA TABELAB E HIGIENIZAÇÃO DE STRINGS
+'-------------------------------------------------------------------------------------------------------------------
+Private Function LimparTextoTabelaB(ByVal sTexto As String) As String
+    Dim sLimpo As String
+    If Len(sTexto) = 0 Then
+        LimparTextoTabelaB = ""
+        Exit Function
+    End If
+    
+    sLimpo = Replace(sTexto, Chr$(160), " ")
+    sLimpo = Replace(sLimpo, vbCr, " ")
+    sLimpo = Replace(sLimpo, vbLf, " ")
+    sLimpo = Replace(sLimpo, vbTab, " ")
+    Do While InStr(1, sLimpo, "  ", vbBinaryCompare) > 0
+        sLimpo = Replace(sLimpo, "  ", " ")
+    Loop
+    LimparTextoTabelaB = Trim$(sLimpo)
+End Function
+
+Private Function NormalizarCabecalhoTabelaB(ByVal sCabecalho As String) As String
+    Dim sNorm As String
+    sNorm = UCase$(LimparTextoTabelaB(sCabecalho))
+    sNorm = Replace(sNorm, " #", "#")
+    sNorm = Replace(sNorm, "# ", "#")
+    NormalizarCabecalhoTabelaB = sNorm
+End Function
+
+Private Function LocalizarColunaTabelaB(ByRef vTB As Variant, _
+                                        ByVal sCabecalhoPrincipal As String, _
+                                        ByVal sCabecalhoAlternativo As String, _
+                                        ByVal lColFallback As Long) As Long
+    Dim c As Long
+    Dim maxCols As Long
+    Dim sAlvo1 As String
+    Dim sAlvo2 As String
+    Dim sCabAtual As String
+    
+    maxCols = UBound(vTB, 2)
+    sAlvo1 = NormalizarCabecalhoTabelaB(sCabecalhoPrincipal)
+    sAlvo2 = NormalizarCabecalhoTabelaB(sCabecalhoAlternativo)
+    
+    ' 1. Busca exata pelo cabeçalho principal (ex: "LOCALIDADE#LOCALIDADE")
+    For c = 1 To maxCols
+        sCabAtual = NormalizarCabecalhoTabelaB(CStr(vTB(1, c) & ""))
+        If Len(sCabAtual) > 0 Then
+            If sCabAtual = sAlvo1 Then
+                LocalizarColunaTabelaB = c
+                Exit Function
+            End If
+        End If
+    Next c
+    
+    ' 2. Busca pelo cabeçalho alternativo (quando aplicável)
+    If Len(sAlvo2) > 0 Then
+        For c = 1 To maxCols
+            sCabAtual = NormalizarCabecalhoTabelaB(CStr(vTB(1, c) & ""))
+            If Len(sCabAtual) > 0 Then
+                If sCabAtual = sAlvo2 Then
+                    LocalizarColunaTabelaB = c
+                    Exit Function
+                End If
+            End If
+        Next c
+    End If
+    
+    ' 3. Fallback posicional seguro caso a planilha legada não possua o cabeçalho esperado
+    If lColFallback >= 1 And lColFallback <= maxCols Then
+        LocalizarColunaTabelaB = lColFallback
+    Else
+        LocalizarColunaTabelaB = 0
+    End If
+End Function
+
+Private Function MontarContratosPermitidos(ByVal sContratosUF As String, ByVal dictSAPToContrato As Object) As String
+    Dim vPartes As Variant
+    Dim i As Long
+    Dim sCon As String
+    Dim sCodSAP As String
+    Dim sResult As String
+    
+    sResult = "|"
+    vPartes = Split(sContratosUF, "|")
+    For i = LBound(vPartes) To UBound(vPartes)
+        sCon = UCase$(LimparTextoTabelaB(CStr(vPartes(i))))
+        If Len(sCon) > 0 Then
+            If InStr(1, sResult, "|" & sCon & "|", vbTextCompare) = 0 Then
+                sResult = sResult & sCon & "|"
+            End If
+            
+            If dictSAPToContrato.Exists(sCon) Then
+                sCodSAP = UCase$(CStr(dictSAPToContrato(sCon)))
+                If Len(sCodSAP) > 0 Then
+                    If InStr(1, sResult, "|" & sCodSAP & "|", vbTextCompare) = 0 Then
+                        sResult = sResult & sCodSAP & "|"
+                    End If
+                End If
+            End If
+            
+            If Left$(sCon, 5) = "IRON-" Or sCon = "IRON-LT1" Then
+                If InStr(1, sResult, "|IRON|", vbTextCompare) = 0 Then
+                    sResult = sResult & "IRON|"
+                End If
+            ElseIf Left$(sCon, 3) = "PA-" Or sCon = "PA-LT2" Then
+                If InStr(1, sResult, "|PA|", vbTextCompare) = 0 Then
+                    sResult = sResult & "PA|"
+                End If
+            End If
+        End If
+    Next i
+    
+    MontarContratosPermitidos = sResult
+End Function
 
 '-------------------------------------------------------------------------------------------------------------------
 ' RESUMO DA EXECUÇÃO APRESENTADO AO USUÁRIO
